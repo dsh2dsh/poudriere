@@ -1,3 +1,50 @@
+About
+-----
+
+This project is a fork of
+[poudriere](https://github.com/freebsd/poudriere).
+
+FreeBSD port
+[here](https://github.com/dsh2dsh/freebsd-ports/tree/master/ports-mgmt/poudriere-devel)
+
+Changes from upstream:
+
+  * Speedup building by rebuilding only changed ports.
+  * Better reuse of prebuilded FreeBSD packages.
+
+Fetch packages after removing what we need to rebuild, not before that. See PR
+#1148.
+
+Don't rebuild recursively full chain of dependencies, rebuild only changed
+dependencies. Without this change poudriere rebuild changed ports, ports with
+changed dependencies and ports with dependencies with changed dependencies. For
+instance:
+
+```
+Deleting vulkan-loader-1.3.273.pkg: new version: 1.3.274
+Deleting ffmpeg-6.1_1,1.pkg: missing dependency: vulkan-loader-1.3.273
+Deleting firefox-121.0,2.pkg: missing dependency: ffmpeg-6.1_1,1
+```
+
+`firefox-121.0,2` doesn't depend on `vulkan-loader-1.3.273`, but poudriere
+removes it too, because `ffmpeg-6.1_1,1` was removed.
+
+Now poudriere will remove `ffmpeg-6.1_1,1`, but keep `firefox-121.0,2`, because
+version of `ffmpeg` will not change after rebuilding and `firefox-121.0,2` will
+have valid dependencies. The same step now looks:
+
+```
+Deleting vulkan-loader-1.3.273.pkg: new version: 1.3.274
+Keeping ffmpeg-6.1_1,1.pkg: missing dependency: vulkan-loader-1.3.273
+
+... after processing dependencies
+
+Deleting ffmpeg-6.1_1,1: missing dependency
+```
+
+As you can see it will not rebuild firefox and finish everything faster.
+See PR #1101.
+
 Welcome to poudriere!
 ---------------------
 
