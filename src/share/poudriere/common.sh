@@ -4526,8 +4526,9 @@ package_dir_exists_and_has_packages() {
 }
 
 sanity_check_pkg() {
-	[ $# -eq 1 ] || eargs sanity_check_pkg pkg
+	[ $# -eq 2 ] || eargs sanity_check_pkg pkg check_dir
 	local pkg="$1"
+	local check_dir="$2"
 	local compiled_deps_pkgnames pkgname dep_pkgname
 	local pkgfile
 
@@ -4545,9 +4546,15 @@ sanity_check_pkg() {
 	for dep_pkgname in ${compiled_deps_pkgnames}; do
 		if [ ! -e "${PACKAGES:?}/All/${dep_pkgname}.${PKG_EXT}" ]; then
 			msg_debug "${COLOR_PORT}${pkg}${COLOR_RESET} needs missing ${COLOR_PORT}${dep_pkgname}${COLOR_RESET}"
-			msg "Deleting ${COLOR_PORT}${pkgfile}${COLOR_RESET}: missing dependency: ${COLOR_PORT}${dep_pkgname}${COLOR_RESET}"
-			delete_pkg "${pkg}"
-			return 65	# Package deleted, need another pass
+			msg "Keeping ${COLOR_PORT}${pkgfile}${COLOR_RESET}: missing dependency: ${COLOR_PORT}${dep_pkgname}${COLOR_RESET}"
+			ln -s "${pkg}" "${check_dir}/${pkgname}" || return 1
+			#delete_pkg "${pkg}"
+			#return 65	# Package deleted, need another pass
+
+			# We'll delete this package later and we don't need another pass, because
+			# we don't want to rebuild who depends on this package, because it doesn't
+			# change his version.
+			return 0
 		fi
 	done
 
@@ -4560,12 +4567,22 @@ sanity_check_pkgs() {
 	package_dir_exists_and_has_packages || return 0
 	ensure_pkg_installed ||
 	    err ${EX_SOFTWARE} "sanity_check_pkg: Missing bootstrap pkg"
+	tmpdir=`mktemp -dt poudriere.sanity_check_pkgs`
 
 	parallel_start
 	for pkg in "${PACKAGES:?}"/All/*.${PKG_EXT}; do
-		parallel_run sanity_check_pkg "${pkg}" || ret=$?
+		parallel_run sanity_check_pkg "${pkg}" "${tmpdir}" || ret=$?
 	done
 	parallel_stop || ret=$?
+
+	for check_pkg in `ls "$tmpdir"`; do
+		msg "Deleting ${COLOR_PORT}${check_pkg##*/}${COLOR_RESET}: missing dependency"
+		pkg=`readlink "$tmpdir/$check_pkg"` || break
+		delete_pkg "${pkg}"
+		unlink "${tmpdir}/${check_pkg}" || break
+	done
+	rmdir "${tmpdir}" || ret=1
+
 	if [ ${ret} -eq 0 ]; then
 		return 0	# Nothing deleted
 	fi
