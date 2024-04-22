@@ -12,8 +12,8 @@ Changes from upstream:
   * Speedup building by rebuilding only changed ports.
   * Better reuse of prebuilded FreeBSD packages.
 
-Fetch packages after removing what we need to rebuild, not before that. See PR
-#1148.
+Fetch packages after removing what we need to rebuild, not before that.
+See PR [1148](https://github.com/freebsd/poudriere/pull/1148).
 
 Don't rebuild recursively full chain of dependencies, rebuild only changed
 dependencies. Without this change poudriere rebuild changed ports, ports with
@@ -43,7 +43,7 @@ Deleting ffmpeg-6.1_1,1: missing dependency
 ```
 
 As you can see it will not rebuild firefox and finish everything faster.
-See PR #1101.
+See PR [1101](https://github.com/freebsd/poudriere/pull/1101).
 
 Welcome to poudriere!
 ---------------------
