@@ -4896,18 +4896,18 @@ build_port() {
 			;;
 		fetch)
 			mkdir -p "${mnt:?}/portdistfiles"
-			case "${DISTFILES_CACHE}" in
-			"no") ;;
-			*)
-				echo "DISTDIR=/portdistfiles" >> \
-				    "${mnt:?}/etc/make.conf"
-				gather_distfiles "${originspec}" "${pkgname}" \
-				    "${originspec}" "${pkgname}" \
-				    "${DISTFILES_CACHE:?}" \
-				    "${mnt:?}/portdistfiles" || \
-				    return 1
-				;;
-			esac
+			# case "${DISTFILES_CACHE}" in
+			# "no") ;;
+			# *)
+			# 	echo "DISTDIR=/portdistfiles" >> \
+			# 	    "${mnt:?}/etc/make.conf"
+			# 	gather_distfiles "${originspec}" "${pkgname}" \
+			# 	    "${originspec}" "${pkgname}" \
+			# 	    "${DISTFILES_CACHE:?}" \
+			# 	    "${mnt:?}/portdistfiles" || \
+			# 	    return 1
+			# 	;;
+			# esac
 			JNETNAME="n"
 			JUSER=root
 			;;
@@ -5070,20 +5070,20 @@ build_port() {
 
 		print_phase_footer
 
-		case "${phase}" in
-		"checksum")
-			case "${DISTFILES_CACHE}" in
-			"no") ;;
-			*)
-				gather_distfiles "${originspec}" "${pkgname}" \
-				    "${originspec}" "${pkgname}" \
-				    "${mnt:?}/portdistfiles" \
-				    "${DISTFILES_CACHE:?}" ||
-				    return 1
-				;;
-			esac
-			;;
-		esac
+		# case "${phase}" in
+		# "checksum")
+		# 	case "${DISTFILES_CACHE}" in
+		# 	"no") ;;
+		# 	*)
+		# 		gather_distfiles "${originspec}" "${pkgname}" \
+		# 		    "${originspec}" "${pkgname}" \
+		# 		    "${mnt:?}/portdistfiles" \
+		# 		    "${DISTFILES_CACHE:?}" ||
+		# 		    return 1
+		# 		;;
+		# 	esac
+		# 	;;
+		# esac
 
 		case "${PORTTESTING}${phase}" in
 		"1""stage")
