@@ -10,6 +10,7 @@
 .*.sw*
 libtool
 .deps/
+.dir-locals-2.el
 .dirstamp
 .dirstamp/
 /autom4te.cache
