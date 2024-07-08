@@ -78,8 +78,7 @@ pkgqueue_get_next() {
 	# May need to try multiple times due to races and queued-for-order jobs
 	while :; do
 		pkgq_dir="$(find ${POOL_BUCKET_DIRS:?} \
-		    -type d -depth 1 -empty -print -quit)" ||
-		    err "${EX_SOFTWARE}" "pkgqueue_get_next: Failed to search queue"
+		    -type d -depth 1 -empty -print -quit || :)"
 		# No more eligible work!
 		case "${pkgq_dir}" in
 		"")
@@ -273,11 +272,20 @@ _pkgqueue_might_run() {
 	*) err "${EX_SOFTWARE}" "_pkgqueue_might_run: Unhandled job_type ${job_type}" ;;
 	esac
 	pkgname="${job_name}"
+	# XXX: Layer violation
 	PACKAGES="${MASTER_DATADIR:?}/../packages"
-	if [ -f "${PACKAGES:?}/All/${pkgname}.${PKG_EXT}" ]; then
-		return 1
+	# No package - must build
+	if [ ! -f "${PACKAGES:?}/All/${pkgname}.${PKG_EXT}" ]; then
+		return 0
 	fi
-	return 0
+	# If this package has required shlibs we need to check it again later.
+	# See build_pkg().
+	if shash_exists pkgname-check_shlibs "${pkgname}"; then
+		msg_debug "Might need to build ${COLOR_PORT}${pkgname}${COLOR_RESET} later for missing shlibs"
+		return 0
+	fi
+
+	return 1
 }
 
 pkgqueue_add() {

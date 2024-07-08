@@ -112,10 +112,10 @@ firmware_build()
 	FTMPDIR=`mktemp -d -t poudriere-firmware` || exit 1
 	# Set proper permissions to this empty directory: /cfg (so /etc) and /data once mounted will inherit them
 	chmod -R 755 ${FTMPDIR}
-	makefs -B little -s ${CFG_SIZE} ${WRKDIR}/cfg.img ${FTMPDIR}
-	makefs -B little -s ${DATA_SIZE} ${WRKDIR}/data.img ${FTMPDIR}
+	makefs -B little -s ${CFG_SIZE} -o optimization=space,minfree=0,label=cfg ${WRKDIR}/cfg.img ${FTMPDIR}
+	makefs -B little -s ${DATA_SIZE} -o label=data ${WRKDIR}/data.img ${FTMPDIR}
 	rm -rf ${FTMPDIR}
-	makefs -B little -s ${OS_SIZE}m -o label=${IMAGENAME} \
+	makefs -B little -s ${OS_SIZE}m -o optimization=space,minfree=0,label=${IMAGENAME} \
 		-o version=2 ${WRKDIR}/raw.img ${WRKDIR}/world
 }
 
@@ -132,9 +132,9 @@ firmware_generate()
 		fi
 	fi
 	espfilename=$(mktemp /tmp/efiboot.XXXXXX)
-	make_esp_file ${espfilename} ${ESP_SIZE} ${WRKDIR}/world/boot/loader.efi
+	make_esp_file ${espfilename} ${ESP_SIZE} ${WRKDIR}/world/boot/gptboot.efi
 	mkimg -s gpt -C ${IMAGESIZE} -b ${mnt}/boot/pmbr \
-		-p efi:=${espfilename} \
+		-p efi/efiboot0:=${espfilename} \
 		-p freebsd-boot:=${mnt}/boot/gptboot \
 		-p freebsd-ufs/${IMAGENAME}1:=${WRKDIR}/raw.img \
 		-p freebsd-ufs/${IMAGENAME}2:=${WRKDIR}/raw.img \
@@ -144,6 +144,7 @@ firmware_generate()
 		${SWAPLAST} \
 		-o "${OUTPUTDIR}/${FINALIMAGE}"
 	rm -rf ${espfilename}
+ 	mv ${WRKDIR}/raw.img "${OUTPUTDIR}/${IMAGENAME}-upgrade.img
 }
 
 rawfirmware_check()
@@ -223,10 +224,10 @@ rawfirmware_build()
 	FTMPDIR=`mktemp -d -t poudriere-firmware` || exit 1
 	# Set proper permissions to this empty directory: /cfg (so /etc) and /data once mounted will inherit them
 	chmod -R 755 ${FTMPDIR}
-	makefs -B little -s ${CFG_SIZE} ${WRKDIR}/cfg.img ${FTMPDIR}
-	makefs -B little -s ${DATA_SIZE} ${WRKDIR}/data.img ${FTMPDIR}
+	makefs -B little -s ${CFG_SIZE} -o optimization=space,minfree=0,label=cfg ${WRKDIR}/cfg.img ${FTMPDIR}
+	makefs -B little -s ${DATA_SIZE} -o label=data ${WRKDIR}/data.img ${FTMPDIR}
 	rm -rf ${FTMPDIR}
-	makefs -B little -s ${OS_SIZE}m -o label=${IMAGENAME} \
+	makefs -B little -s ${OS_SIZE}m -o optimization=space,minfree=0,label=${IMAGENAME} \
 		-o version=2 ${WRKDIR}/raw.img ${WRKDIR}/world
 }
 
