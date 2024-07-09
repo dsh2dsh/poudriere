@@ -7040,6 +7040,7 @@ delete_old_pkg() {
 		return 0
 	fi
 	# The package is kept.
+	[ "$PKG_NO_VERSION_FOR_DEPS" = "no" ] && return 0
 
 	# If the package has shlib dependencies then we need to recheck it
 	# later to ensure those dependencies are still provided by another
