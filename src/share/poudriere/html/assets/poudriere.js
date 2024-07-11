@@ -956,7 +956,7 @@ function process_data(data) {
     /* Resize due to full content. */
     do_resize($(window));
     // Hide loading overlay
-    // $("#loading_overlay").fadeOut(900);
+    $("#loading_overlay").fadeOut(900);
     /* Now that page is loaded, scroll to anchor. */
     if (location.hash) {
       scrollToElement(location.hash);
