@@ -5,7 +5,11 @@ This project is a fork of
 [poudriere](https://github.com/freebsd/poudriere).
 
 FreeBSD port
-[here](https://github.com/dsh2dsh/freebsd-ports/tree/master/ports-mgmt/poudriere-devel)
+[here](https://github.com/dsh2dsh/freebsd-ports/tree/master/ports-mgmt/poudriere-dsh2dsh):
+
+``` shell
+pkg install zrepl-dsh2dsh
+```
 
 Changes from upstream:
 
