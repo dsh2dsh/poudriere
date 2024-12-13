@@ -1,10 +1,10 @@
 #!/bin/sh
-# 
+#
 # Copyright (c) 2010-2013 Baptiste Daroussin <bapt@FreeBSD.org>
 # Copyright (c) 2010-2011 Julien Laffaye <jlaffaye@FreeBSD.org>
 # Copyright (c) 2012-2017 Bryan Drewery <bdrewery@FreeBSD.org>
 # All rights reserved.
-# 
+#
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions
 # are met:
@@ -13,7 +13,7 @@
 # 2. Redistributions in binary form must reproduce the above copyright
 #    notice, this list of conditions and the following disclaimer in the
 #    documentation and/or other materials provided with the distribution.
-# 
+#
 # THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
 # ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
 # IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
@@ -207,44 +207,110 @@ esac
 
 # Message functions that depend on VERBOSE are stubbed out in post_getopts.
 
-_msg_n() {
+_msg_fmt_n() {
 	local -; set +x
 	local now elapsed
-	local NL="${1}"
-	local arrow DRY_MODE
-	shift 1
+	local fmt="${1}"
+	local nl="${2}"
+	local arrow arrow2 DRY_MODE
+	local fmt_prefix fmt_prefix2 fmt_prefix_nocol fmt_sufx
+	shift 2
 
 	if [ "${MSG_NESTED:-0}" -eq 1 ]; then
-		unset elapsed arrow DRY_MODE
+		unset elapsed arrow arrow2 DRY_MODE
 	elif should_show_elapsed; then
 		now=$(clock -monotonic)
 		calculate_duration elapsed "$((now - ${TIME_START:-0}))"
 		elapsed="[${elapsed}] "
 		unset arrow
+		arrow2="=>>>"
 	else
 		unset elapsed
 		arrow="=>>"
+		arrow2="=>>>"
 	fi
 	case "${COLOR_ARROW-}${1}" in
 	*$'\033'"["*)
-		printf "${elapsed:+${COLOR_ARROW-}${elapsed}${COLOR_RESET}}${DRY_MODE:+${COLOR_ARROW-}${DRY_MODE-}${COLOR_RESET}}${arrow:+${COLOR_ARROW-}${arrow} ${COLOR_RESET}}%s${COLOR_RESET}${NL}" "$*"
+		# Need to insert a COLOR_RESET before the newline
+		# for timestamp(1) or otherwise the timestamp gets
+		# colored before the reset starts the next line.
+		fmt_prefix="${elapsed:+${COLOR_ARROW-}${elapsed}${COLOR_RESET}}${DRY_MODE:+${COLOR_ARROW-}${DRY_MODE-}${COLOR_RESET}}${arrow:+${COLOR_ARROW-}${arrow} ${COLOR_RESET}}"
+		fmt_prefix_nocol="${elapsed-}${DRY_MODE-}${arrow:+${arrow} }"
+		#fmt_prefix2="${arrow2:+${COLOR_ARROW-}${arrow2} ${COLOR_RESET}}"
+		fmt_prefix2=align
+		fmt_sufx="${COLOR_RESET}"
 		;;
 	*)
-		printf "${elapsed-}${DRY_MODE-}${arrow:+${arrow} }%s${NL}" "$*"
+		fmt_prefix="${elapsed-}${DRY_MODE-}${arrow:+${arrow} }"
+		fmt_prefix_nocol=
+		#fmt_prefix2="${arrow2:+${arrow2} }"
+		fmt_prefix2=align
+		fmt_sufx=
 		;;
 	esac
+	# Add in prefix/sufx for subsequent lines if needed.
+	case "${fmt_prefix2:+set}.${fmt_sufx:+set}" in
+	".") ;;
+	*)
+		case "${fmt}" in
+		*"\n"*)
+			case "${fmt_prefix2}" in
+			"align")
+				# Fill in the 2nd line with blanks to align
+				# with the first line.
+				local fmt_prefix_blank
+
+				_gsub "${fmt_prefix_nocol:-${fmt_prefix}}" \
+				    "*" " " fmt_prefix_blank
+				_gsub "${fmt}" "\n" \
+				    "${fmt_sufx}\n${fmt_prefix_blank}" \
+				    fmt
+				;;
+			*)
+				# Use fmt_prefix2 as the prefix for
+				# subsequent lines.
+				_gsub "${fmt}" "\n" \
+				    "${fmt_sufx}\n${fmt_prefix2}" \
+				    fmt
+				;;
+			esac
+			;;
+		esac
+		;;
+	esac
+	printf "${fmt_prefix}${fmt}${fmt_sufx}${nl}" "$@"
+}
+
+msg_fmt() {
+	local -; set +x
+	local fmt="$1"
+	shift
+	local nl
+
+	# Need to split out the end newline for color handling in
+	# _msg_fmt_n.
+	case "${fmt}" in
+	*"\n")
+		fmt="${fmt%"\n"}"
+		nl="\n"
+		;;
+	*)
+		nl=
+		;;
+	esac
+	_msg_fmt_n "${fmt}" "${nl}" "$@"
 }
 
 msg_n() {
-	_msg_n '' "$@"
+	_msg_fmt_n "%s" '' "$*"
 }
 
 msg() {
-	_msg_n "\n" "$@"
+	_msg_fmt_n "%s" "\n" "$*"
 }
 
 msg_verbose() {
-	_msg_n "\n" "$@"
+	_msg_fmt_n "%s" "\n" "$*"
 }
 
 msg_error() {
@@ -283,7 +349,7 @@ msg_dev() {
 
 	MSG_NESTED="${MSG_NESTED_STDERR:-0}"
 	COLOR_ARROW="${COLOR_DEV}" \
-	    _msg_n "\n" "${COLOR_DEV}Dev:${COLOR_RESET}" "$@" >&2
+	    _msg_fmt_n "\n" "${COLOR_DEV}Dev:${COLOR_RESET} $*" >&2
 }
 
 msg_debug() {
@@ -292,7 +358,7 @@ msg_debug() {
 
 	MSG_NESTED="${MSG_NESTED_STDERR:-0}"
 	COLOR_ARROW="${COLOR_DEBUG}" \
-	    _msg_n "\n" "${COLOR_DEBUG}Debug:${COLOR_RESET}" "$@" >&2
+	    _msg_fmt_n "\n" "${COLOR_DEBUG}Debug:${COLOR_RESET} $*" >&2
 }
 
 msg_warn() {
@@ -307,8 +373,7 @@ msg_warn() {
 		unset prefix
 	fi
 	COLOR_ARROW="${COLOR_WARN}" \
-	    _msg_n "\n" ${prefix:+"${COLOR_WARN}${prefix}${COLOR_RESET}"} \
-	    "$@" >&2
+	    _msg_fmt_n "%s" "\n" "${prefix:+${COLOR_WARN}${prefix}${COLOR_RESET} }$*" >&2
 }
 
 job_msg() {
@@ -329,7 +394,7 @@ job_msg() {
 		unset output
 		;;
 	esac
-	redirect_to_bulk _msg_n "\n" ${output:+"${output}"} "$@"
+	redirect_to_bulk _msg_fmt_n "%s" "\n" "${output:+${output} }$*"
 }
 
 # Stubbed until post_getopts
@@ -538,7 +603,7 @@ logfile() {
 	_logfile logfile "${pkgname}"
 	echo "${logfile}"
 }
- 
+
 _log_path_top() {
 	local -; set -u +x
 
@@ -1091,11 +1156,11 @@ buildlog_start() {
 	    ${PORT_FLAGS} \
 	    ${make_vars}
 
-	echo "build started at $(date)"
+	echo "build started at $(date -Iseconds)"
 	case "${PKG_REPRODUCIBLE}" in
 	"yes") ;;
 	*)
-		date=$(env TZ=UTC date "+%Y-%m-%dT%H:%M:%S%z")
+		date=$(date -u -Iseconds)
 		pkg_note_add "${pkgname}" build_timestamp "${date}"
 		;;
 	esac
@@ -1194,7 +1259,7 @@ buildlog_stop() {
 
 	_log_path log
 
-	echo "build of ${originspec} | ${pkgname} ended at $(date)"
+	echo "build of ${originspec} | ${pkgname} ended at $(date -Iseconds)"
 	case "${TIME_START_JOB:+set}" in
 	set)
 		now=$(clock -monotonic)
@@ -1396,7 +1461,7 @@ update_stats() {
 	lock_acquire update_stats || return 1
 	critical_start
 
-	for type in built failed ignored; do
+	for type in built failed inspected ignored; do
 		_bget '' "ports.${type}"
 		bset "stats_${type}" "${_read_file_lines_read:?}"
 	done
@@ -1417,6 +1482,7 @@ update_stats_queued() {
 	_log_path log
 	sort "${log:?}/.poudriere.ports.tobuild" \
 	    "${log:?}/.poudriere.ports.ignored" \
+	    "${log:?}/.poudriere.ports.inspected" \
 	    "${log:?}/.poudriere.ports.skipped" \
 	    "${log:?}/.poudriere.ports.fetched" \
 	    | write_atomic "${log:?}/.poudriere.ports.queued"
@@ -1707,8 +1773,8 @@ show_dry_run_summary() {
 }
 
 show_build_summary() {
-	local status nbb nbf nbs nbi nbq nbp ndone nbtobuild buildname
-	local log now elapsed buildtime queue_width nbtb
+	local status nbb nbf nbs nbi nbin nbq nbp ndone nbremaining buildname
+	local log now elapsed buildtime nbtb
 
 	_bget status status || status=unknown
 	_log_path log
@@ -1731,43 +1797,35 @@ show_build_summary() {
 	update_remaining || :
 	_bget nbf stats_failed || nbf=0
 	_bget nbi stats_ignored || nbi=0
+	_bget nbin stats_inspected || nbin=0
 	_bget nbs stats_skipped || nbs=0
 	_bget nbp stats_fetched || nbp=0
 	_bget nbb stats_built || nbb=0
 	_bget nbtb stats_tobuild || nbtb=0
-	ndone=$((nbb + nbf + nbi + nbs + nbp))
-	nbtobuild=$((nbq - ndone))
+	ndone=$((nbb + nbf + nbi + nbin + nbs + nbp))
+	nbremaining=$((nbq - ndone))
 
-	if [ ${nbq} -gt 9999 ]; then
-		queue_width=5
-	elif [ ${nbq} -gt 999 ]; then
-		queue_width=4
-	elif [ ${nbq} -gt 99 ]; then
-		queue_width=3
-	else
-		queue_width=2
-	fi
-
-	printf "[%s] [%s] [%s] \
-Queued: %-${queue_width}d \
-${COLOR_SUCCESS}Built: %-${queue_width}d \
-${COLOR_FAIL}Failed: %-${queue_width}d \
-${COLOR_SKIP}Skipped: %-${queue_width}d \
-${COLOR_IGNORE}Ignored: %-${queue_width}d \
-${COLOR_FETCHED}Fetched: %-${queue_width}d \
-${COLOR_RESET}Tobuild: %-${queue_width}d  Time: %s\n" \
-	    "${MASTERNAME}" "${buildname}" "${status%%:*}" \
-	    "${nbq}" "${nbb}" "${nbf}" "${nbs}" "${nbi}" "${nbp}" \
-	    "${nbtobuild}" "${buildtime}"
-	case "${nbtobuild}" in
-	-*) dev_err "${EX_SOFTWARE}" "show_build_summary: negative tobuild count" ;;
+	msg_fmt "[%s] [%s] [%s] Time: %s\n\
+Queued: %d \
+${COLOR_IGNORE}Inspected: %d \
+${COLOR_IGNORE}Ignored: %d \
+${COLOR_SUCCESS}Built: %d \
+${COLOR_FAIL}Failed: %d \
+${COLOR_SKIP}Skipped: %d \
+${COLOR_FETCHED}Fetched: %d \
+${COLOR_RESET}Remaining: %d\n" \
+	    "${MASTERNAME}" "${buildname}" "${status%%:*}" "${buildtime}" \
+	    "${nbq}" "${nbin}" "${nbi}" "${nbb}" "${nbf}" "${nbs}" "${nbp}" \
+	    "${nbremaining}"
+	case "${nbremaining}" in
+	-*) dev_err "${EX_SOFTWARE}" "show_build_summary: negative remaining count" ;;
 	esac
 	case "${status}" in
 	idle:)
-		case "${nbtobuild}" in
+		case "${nbremaining}" in
 		0) ;;
 		*)
-			dev_err "${EX_SOFTWARE}" "show_build_summary: tobuild count >0 after build"
+			dev_err "${EX_SOFTWARE}" "show_build_summary: remaining count >0 after build"
 		esac
 	esac
 }
@@ -2310,7 +2368,6 @@ do_jail_mounts() {
 	local from="$1"
 	local mnt="$2"
 	local name="$3"
-	local devfspath="null zero random urandom stdin stdout stderr fd fd/* pts pts/*"
 	local srcpath nullpaths nullpath p arch
 
 	# from==mnt is via jail -u
@@ -2354,10 +2411,8 @@ do_jail_mounts() {
 
 	mount -t devfs devfs ${mnt:?}/dev
 	if [ ${JAILED} -eq 0 ]; then
-		devfs -m ${mnt:?}/dev rule apply hide
-		for p in ${devfspath} ; do
-			devfs -m ${mnt:?}/dev/ rule apply path "${p}" unhide
-		done
+		devfs -m ${mnt:?}/dev ruleset ${DEVFS_RULESET}
+		devfs -m ${mnt:?}/dev rule applyset
 	fi
 
 	if [ "${USE_FDESCFS}" = "yes" ] && \
@@ -2514,7 +2569,7 @@ enter_interactive() {
 		set)
 			cat >> "${MASTERMNT:?}/etc/motd" <<-EOF
 			FLAVOR:			${flavor}
-			
+
 			A FLAVOR was used to build but is not in the environment.
 			Remember to pass FLAVOR to make:
 				make FLAVOR=${flavor}
@@ -2559,6 +2614,12 @@ enter_interactive() {
 		chown -R "${PORTBUILD_USER}" "${MASTERMNT:?}/wrkdirs"
 		;;
 	esac
+	case "${EMULATOR:+set}" in
+	set)
+		# Needed for su(1) to work.
+		chmod u+s "${MASTERMNT:?}${EMULATOR}"
+		;;
+	esac
 
 	if [ ${INTERACTIVE_MODE} -eq 1 ]; then
 		if [ -n "${INTERACTIVE_SHELL}" ]; then
@@ -2583,6 +2644,11 @@ enter_interactive() {
 		fi
 		JNETNAME="n" injail_tty env -i TERM=${SAVED_TERM} \
 		    /usr/bin/login -fp root || :
+		case "${EMULATOR:+set}" in
+		set)
+			chmod u-s "${MASTERMNT:?}${EMULATOR}"
+			;;
+		esac
 	elif [ ${INTERACTIVE_MODE} -eq 2 ]; then
 		# XXX: Not tested/supported with bulk yet.
 		msg "Leaving jail ${MASTERNAME}-n running, mounted at ${MASTERMNT} for interactive run testing"
@@ -2994,6 +3060,7 @@ symlink to .latest/${name}"
 
 show_build_results() {
 	local failed built ignored skipped nbbuilt nbfailed nbignored nbskipped
+	local inspected nbinspected
 	local nbfetched fetched
 
 	failed=$(bget ports.failed | awk '{print $1 ":" $3 }' | xargs echo)
@@ -3003,11 +3070,13 @@ show_build_results() {
 	    '{print $1 ":" color_phase $3 color_port }' | xargs echo)
 	built=$(bget ports.built | awk '{print $1}' | xargs echo)
 	ignored=$(bget ports.ignored | awk '{print $1}' | xargs echo)
+	inspected=$(bget ports.inspected | awk '{print $1}' | xargs echo)
 	fetched=$(bget ports.fetched | awk '{print $1}' | xargs echo)
 	skipped=$(bget ports.skipped | awk '{print $1}' | sort -u | xargs echo)
 	_bget nbbuilt stats_built
 	_bget nbfailed stats_failed
 	_bget nbignored stats_ignored
+	_bget nbinspected stats_inspected
 	_bget nbskipped stats_skipped
 	_bget nbfetched stats_fetched || stats_fetched=0
 
@@ -3026,6 +3095,10 @@ show_build_results() {
 	if [ $nbignored -gt 0 ]; then
 		COLOR_ARROW="${COLOR_IGNORE}" \
 		    msg "${COLOR_IGNORE}Ignored ports: ${COLOR_PORT}${ignored}"
+	fi
+	if [ $nbinspected -gt 0 ]; then
+		COLOR_ARROW="${COLOR_IGNORE}" \
+		    msg "${COLOR_IGNORE}Inspected ports: ${COLOR_PORT}${inspected}"
 	fi
 	if [ $nbfetched -gt 0 ]; then
 		COLOR_ARROW="${COLOR_FETCHED}" \
@@ -3686,6 +3759,12 @@ jail_start() {
 	# Generate /var/run/os-release
 	injail service os-release start || :
 
+	case "${BUILD_AS_NON_ROOT-}" in
+	no)
+		PORTBUILD_USER="root"
+		PORTBUILD_GROUP="wheel"
+		;;
+	esac
 	portbuild_gid=$(injail pw groupshow "${PORTBUILD_GROUP}" 2>/dev/null | cut -d : -f3 || :)
 	case "${portbuild_gid}" in
 	"")
@@ -3765,7 +3844,7 @@ jail_start() {
 		    \( -depth 1 -name wrkdirs -prune \) -o \
 		    \( -type d -o -type f -o -type l \) \
 		    -exec chflags -fh schg {} +
-		chflags noschg \
+		chflags -R noschg \
 		    "${tomnt:?}${LOCALBASE:-/usr/local}" \
 		    "${tomnt:?}${PREFIX:-/usr/local}" \
 		    "${tomnt:?}/usr/home" \
@@ -4412,7 +4491,7 @@ download_from_repo() {
 			continue
 		fi
 		echo "${pkgname}"
-	done | tee "${MASTER_DATADIR:?}/pkg_fetch" | (
+	done | sort | tee "${MASTER_DATADIR:?}/pkg_fetch" | (
 		cd "${PACKAGES_PKG_CACHE:?}"
 		sed -e "s,\$,.${PKG_EXT}," |
 		    xargs -J % ln -fL % "${packages_rel:?}/All/"
@@ -5956,21 +6035,7 @@ build_pkg() {
 			local ignore
 
 			ignore="no rebuild needed for shlib chase"
-			# XXX: ports.inspected
-			badd ports.ignored "${originspec} ${pkgname} ${ignore}"
-			local logfile
-			_logfile logfile "${pkgname}"
-			{
-				local NO_GIT
-
-				NO_GIT=1 buildlog_start "${pkgname}" "${originspec}"
-				print_phase_header "check-sanity"
-				echo "Ignoring: ${ignore}"
-				print_phase_footer
-				buildlog_stop "${pkgname}" "${originspec}" 0
-			} | write_atomic "${logfile}"
-			ln -fs "../${pkgname:?}.log" \
-			    "${log:?}/logs/ignored/${pkgname:?}.log"
+			badd ports.inspected "${originspec} ${pkgname} ${ignore}"
 			COLOR_ARROW="${COLOR_SUCCESS}" \
 			    job_msg_status_debug "Finished" \
 			    "${port}${FLAVOR:+@${FLAVOR}}" "${pkgname}" \
@@ -6831,7 +6896,7 @@ _delete_old_pkg() {
 	"no") ;;
 	*)
 		current_deps=""
-		# FIXME: Move into Infrastructure/scripts and 
+		# FIXME: Move into Infrastructure/scripts and
 		# 'make actual-run-depends-list' after enough testing,
 		# which will avoida all of the injail hacks
 
@@ -9385,21 +9450,25 @@ trim_ignored_pkg() {
 	    "${origin}${flavor:+@${flavor}}${subpkg:+~${subpkg}}" "${pkgname}" \
 	    "${ignore}"
 	if [ "${DRY_RUN:-0}" -eq 0 ]; then
-		local log
+		case "${LOGS_FOR_IGNORED-}" in
+		"yes")
+			local log
 
-		_log_path log
-		_logfile logfile "${pkgname}"
-		{
-			local NO_GIT
+			_log_path log
+			_logfile logfile "${pkgname}"
+			{
+				local NO_GIT
 
-			NO_GIT=1 buildlog_start "${pkgname}" "${originspec}"
-			print_phase_header "check-sanity"
-			echo "Ignoring: ${ignore}"
-			print_phase_footer
-			buildlog_stop "${pkgname}" "${originspec}" 0
-		} | write_atomic "${logfile}"
-		ln -fs "../${pkgname:?}.log" \
-		    "${log:?}/logs/ignored/${pkgname:?}.log"
+				NO_GIT=1 buildlog_start "${pkgname}" "${originspec}"
+				print_phase_header "check-sanity"
+				echo "Ignoring: ${ignore}"
+				print_phase_footer
+				buildlog_stop "${pkgname}" "${originspec}" 0
+			} | write_atomic "${logfile}"
+			ln -fs "../${pkgname:?}.log" \
+			    "${log:?}/logs/ignored/${pkgname:?}.log"
+			;;
+		esac
 		run_hook pkgbuild ignored "${origin}" "${pkgname}" "${ignore}"
 	fi
 	badd ports.ignored "${originspec} ${pkgname} ${ignore}"
@@ -9473,6 +9542,7 @@ prepare_ports() {
 			bset stats_built 0
 			bset stats_failed 0
 			bset stats_ignored 0
+			bset stats_inspected 0
 			bset stats_skipped 0
 			bset stats_fetched 0
 			:> "${log:?}/.data.json"
@@ -9482,6 +9552,7 @@ prepare_ports() {
 			:> "${log:?}/.poudriere.ports.built"
 			:> "${log:?}/.poudriere.ports.failed"
 			:> "${log:?}/.poudriere.ports.ignored"
+			:> "${log:?}/.poudriere.ports.inspected"
 			:> "${log:?}/.poudriere.ports.skipped"
 			:> "${log:?}/.poudriere.ports.fetched"
 			# Link this build as the /latest
@@ -9625,6 +9696,7 @@ prepare_ports() {
 			    "${log:?}/.poudriere.ports.built" \
 			    "${log:?}/.poudriere.ports.failed" \
 			    "${log:?}/.poudriere.ports.ignored" \
+			    "${log:?}/.poudriere.ports.inspected" \
 			    "${log:?}/.poudriere.ports.fetched" \
 			    "${log:?}/.poudriere.ports.skipped" | \
 			    pkgqueue_remove_many_pipe "build"
@@ -9988,7 +10060,7 @@ calculate_ospart_size() {
 	set) calculate_size_in_mb SWAP_SIZE ;;
 	"") SWAP_SIZE=0 ;;
 	esac
-	
+
 	OS_SIZE=$(( ( FULL_SIZE - CFG_SIZE - DATA_SIZE - SWAP_SIZE ) / NUM_PART ))
 	msg "OS Partiton size: ${OS_SIZE}m"
 }
@@ -10328,6 +10400,7 @@ if [ ! -d ${POUDRIERED}/jails ]; then
 			zfs inherit -r ${NS}:stats_failed ${fs}
 			zfs inherit -r ${NS}:stats_skipped ${fs}
 			zfs inherit -r ${NS}:stats_ignored ${fs}
+			zfs inherit -r ${NS}:stats_inspected ${fs}
 			zfs inherit -r ${NS}:stats_queued ${fs}
 			zfs inherit -r ${NS}:status ${fs}
 		done
@@ -10505,6 +10578,7 @@ esac
 : ${FLAVOR_DEFAULT_ALL:=no}
 : ${NULLFS_PATHS:="/rescue /usr/share /usr/tests /usr/lib32"}
 : ${PACKAGE_FETCH_URL:="pkg+http://pkg.FreeBSD.org/\${ABI}"}
+: ${DEVFS_RULESET:=4}
 
 : ${POUDRIERE_TMPDIR:=$(command mktemp -dt poudriere)}
 : ${SHASH_VAR_PATH_DEFAULT:=${POUDRIERE_TMPDIR}}

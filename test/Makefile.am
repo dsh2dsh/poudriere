@@ -18,6 +18,9 @@ XFAIL_TESTS= \
 TESTS=\
 	array.sh \
 	builtins.sh \
+	builtins-cut.sh \
+	builtins-paste.sh \
+	builtins-wc.sh \
 	cache.sh \
 	cache_pipe.sh \
 	calculate_duration.sh \
@@ -72,6 +75,7 @@ TESTS=\
 	prefix_output.sh \
 	read_blocking.sh \
 	read_file.sh \
+	read_line.sh \
 	readarray.sh \
 	readlines.sh \
 	relpath.sh \
@@ -173,6 +177,12 @@ JAIL_TESTS= \
 	bulk-overlay-all.sh \
 	bulk-overlay-specific.sh \
 	bulk-skipped-and-needed-dep.sh \
+	distclean-badorigin.sh \
+	distclean-overlays.sh \
+	distclean-smoke.sh \
+	options-badorigin.sh \
+	options-overlays.sh \
+	options-smoke.sh \
 	testport-all-flavors-failure.sh \
 	testport-build-MOVED-default.sh \
 	testport-build-MOVED-flavor.sh \
