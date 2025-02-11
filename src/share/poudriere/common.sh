@@ -205,6 +205,38 @@ yes) ;;
 	alias dev_err='# ' ;;
 esac
 
+# Extract key type from PKG_REPO_SIGNING_KEY.
+repo_key_type() {
+	local keyspec="${PKG_REPO_SIGNING_KEY}"
+
+	case "${keyspec}" in
+	rsa:*)
+		# Strip an rsa: prefix to avoid new pkg features if we're just using
+		# rsa.
+		;;
+	*:*)
+		echo "${keyspec%%:*}"
+		;;
+	esac
+}
+
+# Extract key path from PKG_REPO_SIGNING_KEY.  It may be prefixed with an
+# optional key type.
+repo_key_path() {
+	local keyspec="${PKG_REPO_SIGNING_KEY}"
+
+	case "${keyspec}" in
+	*:*)
+		# Key is prefixed with a type, but we'll pass the type along to avoid
+		# having to bake knowledge of valid types in multiple projects.
+		echo "${keyspec#*:}"
+		;;
+	*)
+		echo "${keyspec}"
+		;;
+	esac
+}
+
 # Message functions that depend on VERBOSE are stubbed out in post_getopts.
 
 _msg_fmt_n() {
@@ -1873,7 +1905,7 @@ _siginfo_handler() {
 		format_origin_phase="%%c \b%%s \b%%-%ds${COLOR_RESET} \b%%c %%-%ds ${COLOR_PORT}%%%ds %%c %%-%ds${COLOR_RESET} ${COLOR_PHASE}%%%ds${COLOR_RESET} %%-%ds %%-%ds %%%ds %%%ds"
 		display_setup "${format_origin_phase}"
 		display_add " " "" "ID" " " "TOTAL" "ORIGIN" " " "PKGNAME" "PHASE" \
-			    "PHASE" "TMPFS" "CPU%" "MEM%"
+			    "TIME" "TMPFS" "CPU%" "MEM%"
 
 		while mapfile_read_loop_redir j cpu mem; do
 			j="${j#*-job-}"
@@ -7047,8 +7079,7 @@ _delete_old_pkg() {
 					;;
 				esac
 				msg "Deleting ${COLOR_PORT}${pkgfile}${COLOR_RESET}: new dependency: ${COLOR_PORT}${d}${COLOR_RESET}"
-				#msg_verbose "Deleting ${COLOR_PORT}${pkgfile}${COLOR_RESET}: current deps: ${current_deps:+$(sorted ${current_deps})}"
-				msg_verbose "Deleting ${COLOR_PORT}${pkgfile}${COLOR_RESET}: current deps: ${current_deps}"
+				msg_verbose "Deleting ${COLOR_PORT}${pkgfile}${COLOR_RESET}: current deps: ${current_deps:+$(sorted ${current_deps})}"
 				msg_verbose "Deleting ${COLOR_PORT}${pkgfile}${COLOR_RESET}: package deps: ${compiled_deps:+$(sorted ${compiled_deps})}"
 				delete_pkg "${pkg}"
 				return 0
@@ -7276,6 +7307,15 @@ __package_deps_provided_libs() {
 	    -name '*.so*' \
 	    ! -name 'libprivate*' |
 	    awk -F/ '{print $NF}'
+
+	if [ -d "${mnt}/usr/lib32" ]; then
+		find "${mnt:?}/usr/lib32" \
+		    -maxdepth 1 \
+		    -type f \
+		    -name '*.so*' \
+		    ! -name 'libprivate*' |
+		    awk -F/ '{print $NF ":32"}'
+	fi
 }
 
 # Wrapper to handle sort -u
@@ -9631,7 +9671,8 @@ prepare_ports() {
 
 	case "${PKG_REPO_SIGNING_KEY:+set}" in
 	set)
-		if [ ! -f "${PKG_REPO_SIGNING_KEY}" ]; then
+		local repokeypath=$(repo_key_path)
+		if [ ! -f "${repokeypath}" ]; then
 			err 1 "PKG_REPO_SIGNING_KEY defined but the file is missing."
 		fi
 		;;
@@ -9995,15 +10036,21 @@ build_repo() {
 
 	mkdir -p ${MASTERMNT}/tmp/packages
 	if [ -n "${PKG_REPO_SIGNING_KEY}" ]; then
+		local repokeyprefix=$(repo_key_type)
+		local repokeypath=$(repo_key_path)
+		# Avoid a ${type}: prefix for rsa keys.
+		if [ -n "${repokeyprefix}" ]; then
+			repokeyprefix="${repokeyprefix}:"
+		fi
 		msg "Signing repository with key: ${PKG_REPO_SIGNING_KEY}"
-		install -m 0400 "${PKG_REPO_SIGNING_KEY}" \
+		install -m 0400 "${repokeypath}" \
 			"${MASTERMNT:?}/tmp/repo.key"
 		injail ${PKG_BIN:?} repo \
 			${PKG_REPO_FLAGS-} \
 			${pkg_repo_list_files:+"${pkg_repo_list_files}"} \
 			-o /tmp/packages \
 			${PKG_META} \
-			/packages /tmp/repo.key ||
+			/packages "${repokeyprefix}"/tmp/repo.key ||
 		    err "$?" "Failed to sign pkg repository"
 		unlink "${MASTERMNT:?}/tmp/repo.key"
 	elif [ "${PKG_REPO_FROM_HOST:-no}" = "yes" ]; then
