@@ -66,7 +66,7 @@ pkg_get_origin() {
 	case "${var_return}" in
 	"") ;;
 	-) echo "${_origin}" ;;
-	*) setvar "${var_return}" "${_origin}" ;;
+	*) setvar "${var_return}" "${_origin}" || return ;;
 	esac
 }
 
@@ -126,7 +126,7 @@ pkg_get_shlib_required_count() {
 	case "${var_return}" in
 	"") ;;
 	-) echo "${_count}" ;;
-	*) setvar "${var_return}" "${_count}" ;;
+	*) setvar "${var_return}" "${_count}" || return ;;
 	esac
 }
 
@@ -170,7 +170,7 @@ pkg_get_annotation() {
 	case "${pga_var_return}" in
 	"") ;;
 	-) echo "${value}" ;;
-	*) setvar "${pga_var_return}" "${value}" ;;
+	*) setvar "${pga_var_return}" "${value}" || return ;;
 	esac
 }
 
@@ -211,7 +211,7 @@ pkg_get_arch() {
 	case "${var_return}" in
 	"") ;;
 	-) echo "${_arch}" ;;
-	*) setvar "${var_return}" "${_arch}" ;;
+	*) setvar "${var_return}" "${_arch}" || return ;;
 	esac
 }
 
@@ -225,6 +225,7 @@ pkg_get_dep_origin_pkgnames() {
 	local SHASH_VAR_PATH SHASH_VAR_PREFIX=
 	local fetched_data compiled_dep_origins compiled_dep_pkgnames
 	local origin pkgname
+	local -
 
 	compiled_dep_origins=
 	compiled_dep_pkgnames=
@@ -240,7 +241,10 @@ pkg_get_dep_origin_pkgnames() {
 	"") return 0 ;;
 	esac
 	# Split the data
+	set -o noglob
+	# shellcheck disable=SC2086
 	set -- ${fetched_data}
+	set +o noglob
 	while [ $# -ne 0 ]; do
 		origin="$1"
 		pkgname="$2"
@@ -259,12 +263,18 @@ pkg_get_dep_origin_pkgnames() {
 	case "${var_return_origins}" in
 	"") ;;
 	-) echo "${compiled_dep_origins-}" ;;
-	*) setvar "${var_return_origins}" "${compiled_dep_origins-}" ;;
+	*)
+		setvar "${var_return_origins}" "${compiled_dep_origins-}" ||
+		    return
+		;;
 	esac
 	case "${var_return_pkgnames}" in
 	"") ;;
 	-) echo "${compiled_dep_pkgnames-}" ;;
-	*) setvar "${var_return_pkgnames}" "${compiled_dep_pkgnames-}" ;;
+	*)
+		setvar "${var_return_pkgnames}" "${compiled_dep_pkgnames-}" ||
+		    return
+		;;
 	esac
 }
 
@@ -299,7 +309,7 @@ pkg_get_options() {
 	case "${var_return}" in
 	"") ;;
 	-) echo "${_compiled_options-}" ;;
-	*) setvar "${var_return}" "${_compiled_options-}" ;;
+	*) setvar "${var_return}" "${_compiled_options-}" || return ;;
 	esac
 }
 
@@ -524,7 +534,10 @@ _pkg_version_expanded() {
 		;;
 	esac
 	_gsub "${ver}" "[_.]" " " ver_sub
+	set -o noglob
+	# shellcheck disable=SC2086
 	set -- ${ver_sub}
+	set +o noglob
 
 	printf "%02d" "${epoch}"
 	while [ $# -gt 0 ]; do
@@ -545,7 +558,7 @@ pkg_version() {
 	local ver1_expanded ver2_expanded
 
 	case "${ver1}${ver2}" in
-	*[a-zA-Z]*)
+	*[a-zA-Z+]*)
 		local PKG_BIN PKG_VERSION
 
 		if which -s pkg-static; then

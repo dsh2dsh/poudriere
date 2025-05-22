@@ -165,6 +165,8 @@ else
 fi
 
 PACKAGES="${POUDRIERE_DATA:?}/packages/${MASTERNAME:?}"
+PACKAGES_ROOT="${PACKAGES:?}"
+PACKAGES_PKG_CACHE="${PACKAGES_ROOT:?}/.pkg-cache"
 case "${ATOMIC_PACKAGE_REPOSITORY}" in
 yes)
 	if [ -d "${PACKAGES:?}/.building" ]; then
@@ -330,6 +332,41 @@ if ! parallel_stop; then
 	err 1 "Fatal errors processing packages"
 fi
 
+check_keep_old_packages() {
+	local keep_cnt repo
+
+	case "${KEEP_OLD_PACKAGES-}" in
+	yes) ;;
+	*)
+		return 0
+		;;
+	esac
+
+	keep_cnt=$((KEEP_OLD_PACKAGES_COUNT + 1))
+	find "${PACKAGES_ROOT:?}/" -type d -mindepth 1 -maxdepth 1 \
+	    -name '.real_*' | sort -dr |
+	    sed -n "${keep_cnt},\$p" | while read repo; do
+		msg_verbose "Found excess pkg repo: ${repo}"
+		echo "${repo:?}" >> "${BADFILES_LIST:?}"
+	done
+}
+
+check_keep_old_packages
+
+check_pkg_cache() {
+	local file
+
+	if [ ! -e "${PACKAGES_PKG_CACHE:?}" ]; then
+		return 0
+	fi
+	find -L "${PACKAGES_PKG_CACHE:?}" -links 1 | while read file; do
+		msg_verbose "Found stale pkg-cache file: ${file}"
+		echo "${file:?}" >> "${BADFILES_LIST:?}"
+	done
+}
+
+check_pkg_cache
+
 check_duplicated_packages() {
 	[ "$#" -eq 2 ] || eargs check_duplicated_packages origin packages
 	local origin="$1"
@@ -443,4 +480,4 @@ if [ "${ret}" -eq 1 ] || [ "${FORCE_BUILD_REPO}" -eq 1 ]; then
 		msg "Cleaned all packages but ${PACKAGES} may need to be removed manually."
 	fi
 fi
-run_hook pkgclean done ${ret} ${BUILD_REPO}
+run_hook pkgclean done ${ret} ${BUILD_REPO} ${FORCE_BUILD_REPO}

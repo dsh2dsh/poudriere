@@ -84,7 +84,7 @@ make_getjob() {
 		    pwait -o -t "0.1" "${THIS_JOB}" >/dev/null 2>&1; then
 			# This runtest.sh runner itself was given a job.
 			# Use it before asking the jobserver for more.
-			collectpids "0.1"
+			collectpids "0.1" || :
 			THIS_JOB=1
 			mg_job="this"
 			#echo "GOT JOB ${mg_job}" >&2
@@ -142,13 +142,13 @@ set -u
 # fetching.
 while read var; do
 	case "${var}" in
-	abs_top_builddir|\
-	abs_top_srcdir|\
-	srcdir|\
-	bindir|\
-	pkglibexecdir|\
-	pkgdatadir|\
-	VPATH|\
+	am_abs_top_builddir|\
+	am_abs_top_srcdir|\
+	am_srcdir|\
+	am_bindir|\
+	am_pkglibexecdir|\
+	am_pkgdatadir|\
+	am_VPATH|\
 	am_check|am_installcheck|\
 	MAKEFLAGS|\
 	CCACHE*|\
@@ -182,33 +182,33 @@ PATH="/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/sbin:/usr/local/bin:${PATH}"
 
 if [ "${am_check}" -eq 1 ] &&
 	[ "${am_installcheck}" -eq 0 ]; then
-	LIBEXECPREFIX="${abs_top_builddir}"
-	export SCRIPTPREFIX="${abs_top_srcdir}/src/share/poudriere"
+	LIBEXECPREFIX="${am_abs_top_builddir}"
+	export SCRIPTPREFIX="${am_abs_top_srcdir}/src/share/poudriere"
 	export POUDRIEREPATH="poudriere"
 	export PATH="${LIBEXECPREFIX}:${PATH}"
 elif [ "${am_check}" -eq 1 ] &&
 	[ "${am_installcheck}" -eq 1 ]; then
-	LIBEXECPREFIX="${pkglibexecdir}"
-	export SCRIPTPREFIX="${pkgdatadir}"
-	#export POUDRIEREPATH="${bindir}/poudriere"
+	LIBEXECPREFIX="${am_pkglibexecdir}"
+	export SCRIPTPREFIX="${am_pkgdatadir}"
+	#export POUDRIEREPATH="${am_bindir}/poudriere"
 	export POUDRIEREPATH="poudriere"
-	export PATH="${bindir}:${LIBEXECPREFIX}:${PATH}"
+	export PATH="${am_bindir}:${LIBEXECPREFIX}:${PATH}"
 else
-	if [ -z "${abs_top_srcdir-}" ]; then
-		: ${VPATH:="$(realpath "${0%/*}")"}
-		abs_top_srcdir="$(realpath "${VPATH}/..")"
-		abs_top_builddir="${abs_top_srcdir}"
+	if [ -z "${am_abs_top_srcdir-}" ]; then
+		: ${am_VPATH:="$(realpath "${0%/*}")"}
+		am_abs_top_srcdir="$(realpath "${am_VPATH}/..")"
+		am_abs_top_builddir="${am_abs_top_srcdir}"
 	fi
-	LIBEXECPREFIX="${abs_top_builddir}"
-	export SCRIPTPREFIX="${abs_top_srcdir}/src/share/poudriere"
-	export POUDRIEREPATH="${abs_top_builddir}/poudriere"
+	LIBEXECPREFIX="${am_abs_top_builddir}"
+	export SCRIPTPREFIX="${am_abs_top_srcdir}/src/share/poudriere"
+	export POUDRIEREPATH="${am_abs_top_builddir}/poudriere"
 	export PATH="${LIBEXECPREFIX}:${PATH}"
 fi
 if [ -z "${LIBEXECPREFIX-}" ]; then
 	echo "ERROR: Could not determine POUDRIEREPATH" >&2
 	exit 99
 fi
-: ${VPATH:=.}
+: ${am_VPATH:=.}
 : ${SH:=sh}
 if [ "${SH}" = "sh" ]; then
 	SH="${LIBEXECPREFIX}/sh"
@@ -216,7 +216,7 @@ fi
 
 BUILD_DIR="${PWD}"
 # source dir
-THISDIR=${VPATH}
+THISDIR=${am_VPATH}
 THISDIR="$(realpath "${THISDIR}")"
 cd "${THISDIR}"
 
@@ -299,15 +299,24 @@ runtest() {
 
 collectpids() {
 	local timeout="$1"
-	local pids_copy
+	local pids_copy tries max
 
 	case "${pids:+set}" in
 	set) ;;
 	*) return 0 ;;
 	esac
 
-	echo "Waiting on pids: ${pids}" >&2
-	until [ -z "${pids:+set}" ]; do
+	# Try a few times depending on the timeout and reduce it each try.
+	case "${timeout}" in
+	*.*)
+		max="${timeout%.*}"
+		max="$((max + 1))"
+		;;
+	*) max="${timeout}" ;;
+	esac
+	tries=0
+	echo "Waiting on pids: ${pids} timeout: ${timeout}" >&2
+	until [ -z "${pids:+set}" ] || [ "${tries}" -eq "${max}" ]; do
 		pwait -o -t "${timeout}" ${pids} >/dev/null 2>&1 || :
 		pids_copy="${pids}"
 		pids=
@@ -348,7 +357,18 @@ collectpids() {
 				;;
 			esac
 		done
+		tries="$((tries + 1))"
+		case "${timeout}" in
+		*.*) ;;
+		*)
+			timeout="$((timeout - 1))"
+			;;
+		esac
 	done
+	if [ -z "${pids:+set}" ]; then
+		return 0
+	fi
+	return 1
 }
 
 _spawn_wrapper() {
@@ -388,7 +408,7 @@ setvar() {
 	shift
 	local _setvar_value="$*"
 
-	read -r "${_setvar_var}" <<-EOF
+	read -r "${_setvar_var?}" <<-EOF
 	${_setvar_value}
 	EOF
 }
@@ -545,7 +565,7 @@ if [ "${TEST_CONTEXTS_PARALLEL}" -gt 1 ] &&
 			setvar "pid_num_$!" "${TEST_CONTEXT_NUM}"
 			continue
 		fi
-		collectpids 5
+		collectpids 5 || :
 	done
 	{
 		TEST_SUITE_END="$(clock -monotonic)"

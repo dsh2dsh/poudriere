@@ -321,7 +321,8 @@ _assert_ret() {
 	aecho TEST "${lineinfo}" "\$? == ${expected} cmd:" "$*"
 	ret=0
 	"$@" || ret=$?
-	_assert "${lineinfo}" "${expected}" "${ret}" "Bad exit status: ${ret} cmd: $*"
+	reason="Bad exit status: ${ret} cmd: $*"
+	_assert "${lineinfo}" "${expected}" "${ret}" "Bad exit status: ${ret} cmd: $*${REASON:+ "$'\n'" ${REASON}}"
 }
 # This function may be called in "$@" contexts that do not use eval.
 assert_ret() { _assert_ret "" "$@"; }
@@ -358,26 +359,30 @@ alias assert_false='assert_ret_not 0'
 
 _assert_out() {
 	local -; set +x +u +e
-	[ "$#" -ge 3 ] || eargs assert_out expected command '[args]'
+	[ "$#" -ge 4 ] ||
+	    eargs assert_out expected_ret expected command '[args]'
 	local lineinfo="$1"
 	local unordered="$2"
-	local expected="$3"
-	shift 3
+	local expected_ret="$3"
+	local expected="$4"
+	shift 4
 	local out ret tmpfile
 
 	aecho TEST "${lineinfo}" "'${expected}' == '\$($*)'"
 
+	ret=0
 	case "${expected}" in
 	-)
 		tmpfile="$(mktemp -ut assert_out)"
-		(set_pipefail; set -e; "$@" ) > "${tmpfile}"
+		(set_pipefail; set -e; "$@" ) < /dev/null > "${tmpfile}"
 		ret="$?"
 		_assert_file "${lineinfo}" "${unordered}" - "${tmpfile}"
+		_assert "${lineinfo:?}" "${expected_ret}" "${ret}"
 		return "${ret}"
 		;;
 	*)
-		out="$(set_pipefail; set -e; "$@" | cat -vet)"
-		ret="$?"
+		out="$(set_pipefail; set -e; "$@" | cat -vet)" || ret="$?"
+		_assert "${lineinfo:?}" "${expected_ret}" "${ret}"
 		;;
 	esac
 	case "${unordered:-0}" in
@@ -417,7 +422,9 @@ _assert_stack() {
 	echo "${expected}" | tr ' ' '\n' | sort | sed -e '/^$/d' > \
 	    "${expected_tmp}"
 	cmp -s "${have_tmp}" "${expected_tmp}" || ret=$?
-	[ ${ret} -ne 0 ] && comm "${have_tmp}" "${expected_tmp}" >&2
+	if [ ${ret} -ne 0 ]; then
+		comm "${have_tmp}" "${expected_tmp}" >&2
+	fi
 
 	rm -f "${have_tmp}" "${expected_tmp}"
 	assert 0 "${ret}" \

@@ -78,7 +78,7 @@ Options:
                      Only applies if TARGET_ARCH and HOST_ARCH are different.
 
 Options for -d:
-    -C clean      -- Clean remaining data existing in poudriere data folder.
+    -C clean      -- Clean remaining data existing in poudriere data directory.
                      See poudriere(8) for more details. Can be one of:
                        all, cache, logs, packages, wrkdirs
     -y            -- Do not prompt for confirmation when deleting a jail.
@@ -144,7 +144,7 @@ list_jail() {
 
 delete_jail() {
 	local cache_dir method
-	local clean_dir depth
+	local cleandir depth
 
 	if [ -z "${JAILNAME}" ]; then
 		usage JAILNAME
@@ -157,13 +157,13 @@ delete_jail() {
 	method=$(jget ${JAILNAME} method)
 	if [ "${method}" = "null" ]; then
 		# Legacy jail cleanup. New jails don't create this file.
-		if [ -f "${JAILMNT}/etc/login.conf.orig" ]; then
-			mv -f ${JAILMNT}/etc/login.conf.orig \
-			    ${JAILMNT}/etc/login.conf
-			cap_mkdb ${JAILMNT}/etc/login.conf
+		if [ -f "${JAILMNT:?}/etc/login.conf.orig" ]; then
+			mv -f ${JAILMNT:?}/etc/login.conf.orig \
+			    ${JAILMNT:?}/etc/login.conf
+			cap_mkdb ${JAILMNT:?}/etc/login.conf
 		fi
 	else
-		TMPFS_ALL=0 destroyfs ${JAILMNT} jail || :
+		TMPFS_ALL=0 destroyfs ${JAILMNT:?} jail || :
 	fi
 	cache_dir="${POUDRIERE_DATA}/cache/${JAILNAME}-*"
 	rm -rfx ${POUDRIERED:?}/jails/${JAILNAME} ${cache_dir} \
@@ -176,12 +176,12 @@ delete_jail() {
 	case ${CLEANJAIL} in
 		all) cleandir="${POUDRIERE_DATA}" ;;
 		cache) cleandir="${POUDRIERE_DATA}/cache"; depth=1 ;;
-		logs) cleandir="${POUDRIERE_DATA}/logs"; depth=1 ;;
+		logs) cleandir="${POUDRIERE_DATA}/logs"; depth=5 ;;
 		packages) cleandir="${POUDRIERE_DATA}/packages"; depth=1 ;;
 		wrkdirs) cleandir="${POUDRIERE_DATA}/wkdirs"; depth=1 ;;
 	esac
-	if [ -n "${clean_dir}" ]; then
-		find -x "${clean_dir:?}/" -name "${JAILNAME}-*" \
+	if [ -n "${cleandir}" ]; then
+		find -x "${cleandir:?}/" -name "${JAILNAME}-*" \
 		    ${depth:+-maxdepth ${depth}} -print0 | \
 		    xargs -0 rm -rfx || :
 	fi
@@ -1365,7 +1365,7 @@ shift $((OPTIND-1))
 post_getopts
 
 METHOD=${METHOD:-${METHOD_DEF}}
-CLEANJAIL=${CLEAN:-none}
+CLEANJAIL=${CLEANJAIL:-none}
 if [ -n "${JAILNAME}" -a "${COMMAND}" != "create" ]; then
 	_jget ARCH ${JAILNAME} arch || :
 	_jget JAILFS ${JAILNAME} fs || :

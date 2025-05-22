@@ -37,6 +37,7 @@
 #include <sysexits.h>
 
 #include "bltin/bltin.h"
+#include "eval.h"
 #include "syntax.h"
 #include "var.h"
 #define _NEED_SH_FLAGS
@@ -233,15 +234,16 @@ out:
 	} else if (value != NULL && strcmp(value, "") != 0) {
 		printf("%s\n", value);
 	}
+	xtracestr("%s=%s", var, value);
 	return (ret);
 }
 
 int
-issetvarcmd(int argc, char **argv)
+issetcmd(int argc, char **argv)
 {
 
 	if (argc != 2)
-		errx(EX_USAGE, "%s", "Usage: issetvar <var>");
+		errx(EX_USAGE, "%s", "Usage: isset <var>");
 
 	return (lookupvar(argv[1]) == NULL);
 }

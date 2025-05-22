@@ -1,5 +1,5 @@
 set -e
-. common.sh
+. ./common.sh
 set +e
 
 foo() {
@@ -21,7 +21,7 @@ assert_case "*eRRor" "${CAUGHT_ERR_MSG}"
 unset CAUGHT_ERR_STATUS CAUGHT_ERR_MSG
 
 # Framework always returns 99
-assert_ret 99 eval assert_out 'stdout$' foo
+assert_out 99 'stdout$' foo
 assert_true [ -e "${ERR_CHECK:?}" ]
 unlink "${ERR_CHECK}"
 assert "null" "${CRASHED-null}"

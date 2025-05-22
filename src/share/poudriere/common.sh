@@ -149,6 +149,13 @@ _err() {
 	case "${PARALLEL_CHILD:-0}" in
 	0)
 		bset ${MY_JOBID-} status "crashed:err:${MY_JOBID-}" || :
+		case "${MY_JOBID-}" in
+		"") ;;
+		*)
+			# Ensure build_queue() sees this failure.
+			echo ${MY_JOBID} >&6 || :
+			;;
+		esac
 		;;
 	esac
 	case "${exit_status}" in
@@ -342,7 +349,7 @@ msg() {
 }
 
 msg_verbose() {
-	_msg_fmt_n "%s" "\n" "$*"
+	msg "$*"
 }
 
 msg_error() {
@@ -381,7 +388,7 @@ msg_dev() {
 
 	MSG_NESTED="${MSG_NESTED_STDERR:-0}"
 	COLOR_ARROW="${COLOR_DEV}" \
-	    _msg_fmt_n "\n" "${COLOR_DEV}Dev:${COLOR_RESET} $*" >&2
+	    msg "${COLOR_DEV}Dev:${COLOR_RESET} $*" >&2
 }
 
 msg_debug() {
@@ -390,7 +397,7 @@ msg_debug() {
 
 	MSG_NESTED="${MSG_NESTED_STDERR:-0}"
 	COLOR_ARROW="${COLOR_DEBUG}" \
-	    _msg_fmt_n "\n" "${COLOR_DEBUG}Debug:${COLOR_RESET} $*" >&2
+	    msg "${COLOR_DEBUG}Debug:${COLOR_RESET} $*" >&2
 }
 
 msg_warn() {
@@ -405,7 +412,7 @@ msg_warn() {
 		unset prefix
 	fi
 	COLOR_ARROW="${COLOR_WARN}" \
-	    _msg_fmt_n "%s" "\n" "${prefix:+${COLOR_WARN}${prefix}${COLOR_RESET} }$*" >&2
+	    msg "${prefix:+${COLOR_WARN}${prefix}${COLOR_RESET} }$*" >&2
 }
 
 job_msg() {
@@ -426,7 +433,7 @@ job_msg() {
 		unset output
 		;;
 	esac
-	redirect_to_bulk _msg_fmt_n "%s" "\n" "${output:+${output} }$*"
+	redirect_to_bulk msg "${output:+${output} }$*"
 }
 
 # Stubbed until post_getopts
@@ -929,12 +936,12 @@ jstart() {
 		MAX_MEMORY_BYTES="$((MAX_MEMORY * 1024 * 1024 * 1024))"
 		;;
 	esac
-	network="${localipargs}"
+	network="${LOCALIPARGS}"
 
 	case "${RESTRICT_NETWORKING-}" in
 	"yes") ;;
 	*)
-		network="${ipargs} ${JAIL_NET_PARAMS}"
+		network="${IPARGS} ${JAIL_NET_PARAMS}"
 		;;
 	esac
 
@@ -953,7 +960,7 @@ jstart() {
 	jail -c persist name=${name}-n \
 		path=${mpath:?} \
 		host.hostname=${BUILDER_HOSTNAME-${name}} \
-		${ipargs} ${JAIL_PARAMS} ${JAIL_NET_PARAMS}
+		${IPARGS} ${JAIL_PARAMS} ${JAIL_NET_PARAMS}
 	return 0
 }
 
@@ -996,12 +1003,126 @@ jstop() {
 }
 
 eargs() {
+	[ "$#" -ge 1 ] ||
+		err 1 "Usage: eargs funcname named_var1 '[named_var...]' EARGS: \"\$@\""
 	local fname="$1"
+	# First set of args are the named vars expected.
+	# Optionally then EARGS: values to assign for those vars.
+	# Be sure to pass in $@ to match up vars properly.
 	shift
-	case $# in
-	0) err ${EX_SOFTWARE} "${fname}: No arguments expected" ;;
-	1) err ${EX_SOFTWARE} "${fname}: 1 argument expected: $1" ;;
-	*) err ${EX_SOFTWARE} "${fname}: $# arguments expected: $*" ;;
+	local var vars vars2 pre least max maxn cnt range gotargs val vals
+	local namedvals var_sep
+	local gotcnt got
+
+	var_sep="@"
+	gotargs=0
+	least=0
+	cnt=0
+	unset max
+	while [ "$#" -gt 0 ]; do
+		case "$1" in
+		"EARGS:")
+			gotargs=1
+			shift
+			# "$*" is now caller's "$*"
+			break
+			;;
+		*...*)
+			max=inf
+			maxn=999
+			;;
+		'['*) # Optional argument
+			:
+			;;
+		*)
+			least="$((least + 1))"
+			;;
+		esac
+		vars="${vars:+${vars} }$1"
+		vars2="${vars2:+${vars2}${var_sep:?}}$1"
+		cnt="$((cnt + 1))"
+		shift
+	done
+	: "${max:="${cnt}"}"
+	: "${maxn:="${max}"}"
+	case "${max}" in
+	"${least}")
+		range="${max}"
+		;;
+	*)
+		range="${least}-${max}"
+		;;
+	esac
+	# Match up named vars with values for display. This would be simpler
+	# using any helper function but eargs should be independent.
+	# Special care here to convey how $@ was grouped.
+	# Match <named args> up with actual positional arguments in $@.
+	gotcnt=0
+	for val in "$@"; do
+		gotcnt="$((gotcnt + 1))"
+		case "${vars2}" in
+		"")
+			if [ "${gotcnt}" -gt "${maxn}" ]; then
+				namedvals="${namedvals:+${namedvals}}\" ??=\"${val}"
+			else
+				# Last var to add in.
+				namedvals="${namedvals:+${namedvals} }\"${val}"
+			fi
+			;;
+		*)
+			# Pop off first name
+			var="${vars2%%"${var_sep:?}"*}"
+			vars2="${vars2#"${var}${var_sep:?}"}"
+			case "${var}" in
+			"${vars2}") vars2= ;;
+			esac
+			# on new var need to open a quote
+			namedvals="${namedvals:+${namedvals}\" }\"${val}"
+			# XXX: clever but does not handle [] or -flags right
+			# namedvals="${namedvals:+${namedvals}\" }${var}=\"${val}"
+			;;
+		esac
+	done
+	# Close last double quote.
+	namedvals="${namedvals:+${namedvals}\"}"
+	case "${gotargs}" in
+	0)
+		gotargs=
+		got=
+		;;
+	1)
+		got=", got $#"
+		gotargs="${namedvals:+"$'\n'$'\t'"Received: ${fname} ${namedvals}}"
+		# Missing vars
+		case "${vars2}" in
+		"") ;;
+		*)
+			# Need to reconvert vars2 from var_sep to spaces.
+			local IFS -
+
+			IFS="${var_sep:?}"
+			set -o noglob
+			# shellcheck disable=SC2086
+			set -- ${vars2}
+			set +o noglob
+			unset IFS
+			vars2="$*"
+			gotargs="${gotargs:+${gotargs}}"$'\n'$'\t'"Missing:  ${vars2}"
+			;;
+		esac
+		;;
+	esac
+	vars=$'\n'$'\t'"Expected: ${fname} ${vars}"
+	case "${cnt}" in
+	0)
+		err ${EX_SOFTWARE} "${fname}: No arguments expected${got}:${vars}${gotargs}"
+		;;
+	1)
+		err ${EX_SOFTWARE} "${fname}: 1 argument expected${got}:${vars}${gotargs}"
+		;;
+	*)
+		err ${EX_SOFTWARE} "${fname}: ${range} arguments expected${got}:${vars}${gotargs}"
+		;;
 	esac
 }
 
@@ -1012,6 +1133,7 @@ pkgbuild_done() {
 
 	for shash_bucket in \
 	    pkgname-check_shlibs \
+	    pkgname-shlibs_required \
 	    ; do
 		shash_unset "${shash_bucket}" "${pkgname}" || :
 	done
@@ -2109,7 +2231,7 @@ get_data_dir() {
 		fi
 		# Set properties on top dataset and let underlying ones inherit them
 		# Explicitly set properties for values diverging from top dataset
-		zfs create -p -o atime=off \
+		zfs create -o atime=off \
 			-o compression=on \
 			-o mountpoint=${BASEFS} \
 			${ZPOOL}${ZROOTFS}
@@ -2338,61 +2460,6 @@ rm() {
 	done
 
 	command rm "$@"
-}
-
-_update_relpaths() {
-	local -; set +x
-	[ $# -eq 2 ] || eargs _update_relpaths oldroot newroot
-	local oldroot="$1"
-	local newroot="$2"
-	local varname
-
-	for varname in ${RELATIVE_PATH_VARS}; do
-		make_relative "${varname}" "${oldroot}" "${newroot}"
-	done
-}
-
-add_relpath_var() {
-	[ $# -eq 1 ] || eargs add_relpath_var varname
-	local varname="$1"
-	local value
-
-	getvar "${varname}" value ||
-	    err ${EX_SOFTWARE} "add_relpath_var: \$${varname} path must be set"
-	case " ${RELATIVE_PATH_VARS} " in
-	*" ${varname} "*) ;;
-	*) RELATIVE_PATH_VARS="${RELATIVE_PATH_VARS:+${RELATIVE_PATH_VARS} }${varname}" ;;
-	esac
-	if ! issetvar "${varname}_ABS"; then
-		case "${value}" in
-		/*) ;;
-		*)
-			[ -e "${value}" ] ||
-			    err ${EX_SOFTWARE} "add_relpath_var: \$${varname} value '${value}' must exist or be absolute already"
-			value="$(realpath "${value}")"
-		    ;;
-		esac
-		setvar "${varname}_ABS" "${value}"
-	fi
-	make_relative "${varname}"
-}
-
-# Handle relative path change needs
-cd() {
-	local ret
-
-	ret=0
-	critical_start
-	command cd "$@" || ret=$?
-	# Handle fixing relative paths
-	case "${OLDPWD}" in
-	"${PWD}") ;;
-	*)
-		_update_relpaths "${OLDPWD}" "${PWD}" || :
-		;;
-	esac
-	critical_end
-	return ${ret}
 }
 
 do_jail_mounts() {
@@ -4435,8 +4502,15 @@ download_from_repo() {
 	# XXX: rquery is supposed to 'update' but it does not on first run.
 	if ! JNETNAME="n" injail env ASSUME_ALWAYS_YES=yes \
 	    PACKAGESITE="${packagesite:?}" \
-	    ${pkg_bin} update -f; then
+	    ${pkg_bin} update -f -r FreeBSD; then
 		msg "Package fetch: Not fetching as remote repository is unavailable."
+		rm -f "${missing_pkgs}"
+		return 0
+	fi
+	# Don't trust pkg-update to return its error
+	if ! injail ${pkg_bin} rquery -U %n pkg >/dev/null; then
+		msg "Package fetch: Failed to fetch package repository."
+		rm -f "${missing_pkgs}"
 		return 0
 	fi
 
@@ -4513,9 +4587,14 @@ download_from_repo() {
 	    "${MASTERMNT:?}/var/cache/pkg"
 	${NULLMOUNT} "${PACKAGES_PKG_CACHE:?}" "${MASTERMNT:?}/var/cache/pkg" || \
 	    err 1 "null mount failed for pkg cache"
-	JNETNAME="n" injail xargs \
+	if ! JNETNAME="n" injail xargs \
 	    env ASSUME_ALWAYS_YES=yes \
-	    ${pkg_bin} fetch -U < "${wantedpkgs}"
+	    ${pkg_bin} fetch -U < "${wantedpkgs}"; then
+		msg "Package fetch: Error fetching packages"
+		umountfs "${MASTERMNT:?}/var/cache/pkg"
+		rm -f "${wantedpkgs}"
+		return 0
+	fi
 	relpath "${PACKAGES:?}" "${PACKAGES_PKG_CACHE:?}" packages_rel
 	while mapfile_read_loop "${wantedpkgs}" pkgname; do
 		if [ ! -e "${PACKAGES_PKG_CACHE:?}/${pkgname}.${PKG_EXT}" ]; then
@@ -5358,6 +5437,7 @@ build_port() {
 				    cleanenv injail /usr/bin/env \
 				    ${PORT_FLAGS:+-S "${PORT_FLAGS}"} \
 				    PORTSDIR=${PORTSDIR} \
+				    FLAVOR="${flavor}" \
 				    UID_FILES="${P_UID_FILES}" \
 				    portdir="${portdir}" \
 				    /bin/sh \
@@ -5981,7 +6061,9 @@ clean_pool() {
 		    pkgname_is_listed "${skipped_pkgname}"; then
 			trim_ignored_pkg "${skipped_pkgname}" "${skipped_originspec}" "Dependent port ${originspec} | ${pkgname} ${clean_rdepends}"
 		else
-			if ! noclobber shash_set pkgname-skipped "${skipped_pkgname}" 1; then
+			if ! noclobber \
+			    shash_set pkgname-skipped \
+			    "${skipped_pkgname}" 1 2>/dev/null; then
 				msg_debug "clean_pool: Skipping duplicate ${skipped_pkgname}"
 				continue
 			fi
@@ -6043,8 +6125,6 @@ build_pkg() {
 	trap '' TSTP
 	setproctitle "build_pkg (${pkgname})" || :
 
-	get_porttesting "${pkgname}" PORTTESTING
-
 	# Don't show timestamps in msg() which goes to logs, only job_msg()
 	# which goes to master
 	NO_ELAPSED_IN_MSG=1
@@ -6090,6 +6170,7 @@ build_pkg() {
 		    "${pkgname}"
 	fi
 
+	get_porttesting "${pkgname}" PORTTESTING
 	MAKE_ARGS="${FLAVOR:+ FLAVOR=${FLAVOR}}"
 	_lookup_portdir portdir "${port}"
 
@@ -6542,8 +6623,8 @@ deps_fetch_vars() {
 	# Check if this PKGNAME already exists, which is sometimes fatal.
 	# Two different originspecs of the same origin but with
 	# different FLAVORS may result in the same PKGNAME.
-	if ! noclobber shash_set pkgname-originspec "${_pkgname}" \
-	    "${originspec}"; then
+	if ! noclobber shash_set pkgname-originspec \
+	    "${_pkgname}" "${originspec}" 2>/dev/null; then
 		shash_get pkgname-originspec "${_pkgname}" _existing_originspec
 		case "${_existing_originspec}" in
 		"${originspec}")
@@ -6707,10 +6788,9 @@ _delete_old_pkg() {
 	local pkg="$1"
 	local delete_unqueued="$2"
 	local mnt pkgfile pkgname new_pkgname
-	local origin v v2 compiled_options current_options current_deps
-	local td d key dpath dir found raw_deps compiled_deps
-	local pkg_origin compiled_deps_pkgnames compiled_deps_pkgbases
-	local compiled_deps_pkgname compiled_deps_origin compiled_deps_new
+	local origin v v2 compiled_options current_options
+	local d key dpath dir found compiled_deps
+	local pkg_origin compiled_deps_pkgnames
 	local pkgbase new_pkgbase flavor flavors pkg_flavor pkg_subpkg originspec
 	local dep_pkgname dep_pkgbase dep_origin dep_flavor
 	local ignore new_originspec stale_pkg
@@ -6935,15 +7015,27 @@ _delete_old_pkg() {
 	case "${CHECK_CHANGED_DEPS}" in
 	"no") ;;
 	*)
+		local current_deps td dep_types raw_deps
+		local compiled_deps_origin compiled_deps_new
+		local compiled_deps_pkgname compiled_deps_pkgbases
+
 		current_deps=""
 		# FIXME: Move into Infrastructure/scripts and
 		# 'make actual-run-depends-list' after enough testing,
 		# which will avoida all of the injail hacks
 
 		# pkgname-lib_deps pkgname-run_deps
-		for td in lib run; do
+		dep_types=""
+		if have_ports_feature AUTO_LIB_DEPENDS; then
+			dep_types="run"
+			shash_unset "pkgname-lib_deps" "${new_pkgname}" || :
+		else
+			dep_types="lib run"
+		fi
+
+		for td in ${dep_types}; do
 			shash_remove "pkgname-${td}_deps" "${new_pkgname}" \
-			raw_deps || raw_deps=
+			    raw_deps || raw_deps=
 			for d in ${raw_deps}; do
 				key="${d%:*}"
 				found=
@@ -7168,16 +7260,67 @@ delete_old_pkg() {
 	case "${PKG_NO_VERSION_FOR_DEPS-}" in
 	"no") ;;
 	*)
-		# If the package has shlib dependencies then we need to recheck it
-		# later to ensure those dependencies are still provided by another
-		# package.
+		# If the package has shlib dependencies then we need to
+		# recheck it later to ensure those dependencies are still
+		# provided by another package.
 		pkg_get_shlib_required_count shlib_required_count "${pkg}" || return
 		case "${shlib_required_count-}" in
 		""|0) return 0 ;;
 		esac
-		shash_set pkgname-check_shlibs "${pkgname}" "1"
+		# The count includes base libraries.
+		# Base libraries are special and do not require a rebuild
+		# check as the JAIL_OSVERSION/.jailversion will rebuild
+		# everything if changed. In the longterm this may be wrong
+		# if packages start providing base libs, but
+		# determine_base_shlibs() will only include libraries that
+		# are in the jail's clean snapshot.
+		local base_libs pkg_libs cnt
+
+		base_libs="$(mktemp -u)"
+		pkg_libs="$(mktemp -u)"
+		shash_read global baselibs > "${base_libs}"
+		pkg_get_shlib_requires - "${pkg}" > "${pkg_libs}"
+		cnt="$(comm -13 "${base_libs}" "${pkg_libs}" |
+		    shash_write -T pkgname-shlibs_required "${pkgname:?}" |
+		    wc -l)"
+		# +0 to trim spaces
+		case "$((cnt + 0))" in
+		0)
+			# No packaged shlibs required. Only base.
+			shash_unset pkgname-shlibs_required "${pkgname:?}"
+			;;
+		*)
+			# Depends on packaged shlibs. Check again later.
+			shash_set pkgname-check_shlibs "${pkgname}" "1"
+			;;
+		esac
+		rm -f "${base_libs}" "${pkg_libs}"
 		;;
 	esac
+}
+
+determine_base_shlibs() {
+	[ "$#" -eq 0 ] || eargs determine_base_shlibs
+	local mnt
+
+	_my_path mnt
+	{
+		find "${mnt:?}/lib" "${mnt:?}/usr/lib" \
+		    -maxdepth 1 \
+		    -type f \
+		    -name 'lib*.so*' \
+		    ! -name 'libprivate*' |
+		    awk -F/ '{print $NF}'
+
+		if [ -d "${mnt}/usr/lib32" ]; then
+			find "${mnt:?}/usr/lib32" \
+			    -maxdepth 1 \
+			    -type f \
+			    -name 'lib*.so*' \
+			    ! -name 'libprivate*' |
+			    awk -F/ '{print $NF ":32"}'
+		fi
+	} | sort | shash_write global baselibs
 }
 
 delete_old_pkgs() {
@@ -7239,13 +7382,20 @@ delete_old_pkgs() {
 	run_hook delete_old_pkgs stop
 }
 
-_package_recursive_deps() {
-	[ $# -eq 1 ] || eargs _package_recursive_deps pkgfile
+__package_recursive_deps() {
+	[ "$#" -eq 1 ] || eargs __package_recursive_deps pkgfile
 	local pkgfile="$1"
-	local dep_pkgname compiled_deps_pkgnames dep_pkgbase dep_pkgfile fn
+	local dep_pkgname dep_pkgbase dep_pkgfile fn
+	local pkgname compiled_deps_originspecs dep_originspec
 
-	pkg_get_dep_origin_pkgnames '' compiled_deps_pkgnames "${pkgfile:?}"
-	for dep_pkgname in ${compiled_deps_pkgnames?}; do
+	pkgname="${pkgfile##*/}"
+	pkgname="${pkgname%.*}"
+	shash_get pkgname-deps-run "${pkgname:?}" compiled_deps_originspecs ||
+	    err 1 "package_recursive_deps: Failed to find run deps for package ${pkgname}"
+	for dep_originspec in ${compiled_deps_originspecs}; do
+		get_pkgname_from_originspec "${dep_originspec}" \
+		    dep_pkgname ||
+		    err 1 "package_recursive_deps: Failed to lookup pkgname for originspec=${dep_originspec} processing package ${pkgname}"
 		case "${dep_pkgname:?}" in
 		*"-(null)")
 			dep_pkgbase="${dep_pkgname%-*}"
@@ -7275,47 +7425,42 @@ _package_recursive_deps() {
 			package_recursive_deps "${dep_pkgfile:?}"
 			;;
 		esac
-	done | sort -u
+	done
+	# # Add in a pseudo "BASE" package.
+	# echo "BASE"
+}
+
+# wrapper to add sort -u
+_package_recursive_deps() {
+	__package_recursive_deps "$@" | sort -u
 }
 
 package_recursive_deps() {
 	[ $# -eq 1 ] || eargs package_recursive_deps pkgfile
 	local pkgfile="$1"
 
-	cache_call - _package_recursive_deps "${pkgfile:?}"
+	cache_call -K "1-package_recursive_deps-${pkgfile##*/}" - \
+	    _package_recursive_deps "${pkgfile:?}"
 }
 
 __package_deps_provided_libs() {
 	[ $# -eq 1 ] || eargs __package_deps_provided_libs pkgfile
 	local pkgfile="$1"
-	local mnt
 
 	package_recursive_deps "${pkgfile:?}" |
 	    while mapfile_read_loop_redir dep_pkgfile; do
-		dep_pkgfile="${PACKAGES:?}/All/${dep_pkgfile:?}"
-		pkg_get_shlib_provides mapfile_handle "${dep_pkgfile:?}" ||
-		    continue
-		mapfile_cat "${mapfile_handle:?}"
-		mapfile_close "${mapfile_handle}" || :
-		package_deps_provided_libs "${dep_pkgfile:?}"
+		# case "${dep_pkgfile}" in
+		# "BASE")
+		# 	shash_read global baselibs
+		# 	;;
+		# *)
+			dep_pkgfile="${PACKAGES:?}/All/${dep_pkgfile:?}"
+			pkg_get_shlib_provides - "${dep_pkgfile:?}" ||
+			    continue
+			package_deps_provided_libs "${dep_pkgfile:?}"
+			# ;;
+		# esac
 	done
-
-	# Need to consider base as providing base libs.
-	find "${mnt:?}/lib" "${mnt:?}/usr/lib" \
-	    -maxdepth 1 \
-	    -type f \
-	    -name '*.so*' \
-	    ! -name 'libprivate*' |
-	    awk -F/ '{print $NF}'
-
-	if [ -d "${mnt}/usr/lib32" ]; then
-		find "${mnt:?}/usr/lib32" \
-		    -maxdepth 1 \
-		    -type f \
-		    -name '*.so*' \
-		    ! -name 'libprivate*' |
-		    awk -F/ '{print $NF ":32"}'
-	fi
 }
 
 # Wrapper to handle sort -u
@@ -7327,7 +7472,8 @@ package_deps_provided_libs() {
 	[ $# -eq 1 ] || eargs package_deps_provided_libs pkgfile
 	local pkgfile="$1"
 
-	cache_call - _package_deps_provided_libs "${pkgfile:?}"
+	cache_call -K "1-package_deps_provided_libs-${pkgfile##*/}" - \
+	    _package_deps_provided_libs "${pkgfile:?}"
 }
 
 # If the package has shlib dependencies we need to ensure that
@@ -7358,14 +7504,13 @@ package_libdeps_satisfied() {
 		return 1
 		;;
 	esac
-	pkg_get_shlib_requires mapfile_handle "${pkgfile:?}" ||
-	    err "${EX_SOFTWARE}" "package_libdeps_satisfied: Failed to lookup shlib_requires from ${pkgfile}"
-	# $(mapfile_cat) avoids a fork while $(pkg_get_shlib_requires -) does not.
-	shlibs_required="$(mapfile_cat "${mapfile_handle}")"
-	mapfile_close "${mapfile_handle}" || :
-	msg_debug "${COLOR_PORT}${pkgname}${COLOR_RESET}: required: ${shlibs_required}"
+	shash_read_mapfile pkgname-shlibs_required "${pkgname:?}" \
+	    mapfile_handle ||
+	    err "${EX_SOFTWARE}" "package_libdeps_satisfied: Failed to lookup shlib_requires from ${pkgname} ret=$?"
 	ret=0
-	for shlib in ${shlibs_required}; do
+	unset shlibs_required
+	while mapfile_read "${mapfile_handle}" shlib; do
+		shlibs_required="${shlibs_required:+${shlibs_required} }${shlib}"
 		shlib_name="${shlib%.so*}"
 		case " ${shlibs_provided} " in
 		# Success
@@ -7441,10 +7586,15 @@ package_libdeps_satisfied() {
 		# The port should be fixed to properly track the library.
 		# It likely is failing the QA check for leaked libraries.
 		*)
-			job_msg_verbose "${COLOR_PORT}${pkgname}${COLOR_RESET} misses ${shlib} which no dependency provides. This will be ignored but should be fixed in the port."
+			ret=1
+			job_msg_warn "${COLOR_PORT}${pkgname}${COLOR_RESET} will be rebuilt as it misses ${shlib} which no dependency provides. This may be a port bug if it repeats next build."
+			break
 			;;
 		esac
 	done
+	mapfile_close "${mapfile_handle}" || :
+	shash_unset pkgname-shlibs_required "${pkgname:?}"
+	msg_debug "${COLOR_PORT}${pkgname}${COLOR_RESET}: required: ${shlibs_required}"
 	return "${ret}"
 }
 
@@ -7538,7 +7688,7 @@ locked() {
 	local lockname="$2"
 	local waittime="${3-}"
 
-	if issetvar "${l_tmp_var}"; then
+	if isset "${l_tmp_var}"; then
 		lock_release "${lockname}"
 		unset "${l_tmp_var}"
 		return 1
@@ -7583,7 +7733,7 @@ slocked() {
 	local lockname="$2"
 	local waittime="${3-}"
 
-	if issetvar "${s_tmp_var}"; then
+	if isset "${s_tmp_var}"; then
 		slock_release "${lockname}"
 		unset "${s_tmp_var}"
 		return 1
@@ -7704,8 +7854,8 @@ port_var_fetch() {
 	local -; set +x -f
 	[ $# -ge 3 ] || eargs port_var_fetch origin PORTVAR var_set ...
 	local origin="$1"
-	local _make_origin _makeflags _vars ret
-	local _portvar _var _line _errexit shiftcnt varcnt
+	local _make_origin _makeflags pvf_vars pvf_ret
+	local _portvar pvf_var pvf_line shiftcnt varcnt
 	# Use a tab rather than space to allow FOO='BLAH BLAH' assignments
 	# and lookups like -V'${PKG_DEPENDS} ${BUILD_DEPENDS}'
 	local IFS sep=$'\t'
@@ -7726,23 +7876,23 @@ port_var_fetch() {
 
 	shift
 
-	while [ $# -gt 0 ]; do
+	while [ "$#" -gt 0 ]; do
 		_portvar="$1"
 		case "${_portvar}" in
 		*=*)
 			# This is an assignment, no associated variable
 			# for storage.
 			_makeflags="${_makeflags:+${_makeflags}${sep}}${_portvar}"
-			_vars="${_vars:+${_vars} }${assign_var}"
+			pvf_vars="${pvf_vars:+${pvf_vars} }${assign_var}"
 			shift 1
 			;;
 		*)
-			if [ $# -eq 1 ]; then
+			if [ "$#" -eq 1 ]; then
 				break
 			fi
-			_var="$2"
+			pvf_var="$2"
 			_makeflags="${_makeflags:+${_makeflags}${sep}}-V${_portvar}"
-			_vars="${_vars:+${_vars} }${_var}"
+			pvf_vars="${pvf_vars:+${pvf_vars} }${pvf_var}"
 			shift 2
 			;;
 		esac
@@ -7750,29 +7900,18 @@ port_var_fetch() {
 
 	[ $# -eq 0 ] || eargs port_var_fetch origin PORTVAR var_set ...
 
-	_errexit="!errexit!"
-	ret=0
-
-	set -- ${_vars}
-	varcnt=$#
+	pvf_ret=0
+	set -o noglob
+	set -- ${pvf_vars}
+	set +o noglob
+	varcnt="$#"
 	shiftcnt=0
-	while IFS= mapfile_read_loop_redir _line; do
-		case "${_line}" in
-		"${_errexit} "*)
-			ret="${_line#* }"
-			# Encountered an error, abort parsing anything further.
-			# Cleanup already-set vars of 'make: stopped in'
-			# stuff in case the caller is ignoring our non-0
-			# return status.  The shiftcnt handler can deal with
-			# this all itself.
-			shiftcnt=0
-			break
-			;;
-		esac
+	while herepipe_read pvf_ret pvf_line; do
+		# Skip assignment vars.
 		# This var was just an assignment, no actual value to read from
 		# stdout.  Shift until we find an actual -V var.
 		# while [ "${1}" = "${assign_var}" ]; do
-		while :; do
+		while [ "$#" -gt 0 ]; do
 			case "${1}" in
 			"${assign_var}")
 				shift
@@ -7785,38 +7924,62 @@ port_var_fetch() {
 		done
 		# We may have more lines than expected on an error, but our
 		# errexit output is last, so keep reading until then.
-		if [ $# -gt 0 ]; then
-			setvar "$1" "${_line}" || return $?
+		if [ "$#" -gt 0 ]; then
+			setvar "$1" "${pvf_line}" || return "$?"
 			shift
-			shiftcnt=$((shiftcnt + 1))
+			shiftcnt="$((shiftcnt + 1))"
 		fi
 	done <<-EOF
-	$(IFS="${sep}"; ${MASTERNAME+injail} /usr/bin/make ${_make_origin} ${_makeflags-} ||
-	    echo "${_errexit} $?")
+	$({
+		herepipe_trap
+		IFS="${sep}"; ${MASTERNAME+injail} /usr/bin/make ${_make_origin} ${_makeflags-}
+	})
 	EOF
+	case "${pvf_ret}" in
+	0) ;;
+	*)
+		# Cleanup already-set vars of 'make: stopped in'
+		# stuff in case the caller is ignoring our non-0
+		# return status.  The shiftcnt handler can deal with
+		# this all itself.
+		shiftcnt=0
+		;;
+	esac
 
 	# If the entire output was blank, then $() ate all of the excess
 	# newlines, which resulted in some vars not getting setvar'd.
 	# This could also be cleaning up after the errexit case.
-	if [ ${shiftcnt} -ne ${varcnt} ]; then
-		set -- ${_vars}
+	case "${shiftcnt}" in
+	"${varcnt}") ;;
+	*)
+		set -o noglob
+		set -- ${pvf_vars}
+		set +o noglob
 		# Be sure to start at the last setvar'd value.
-		if [ ${shiftcnt} -gt 0 ]; then
-			shift ${shiftcnt}
+		if [ "${shiftcnt}" -gt 0 ]; then
+			shift "${shiftcnt}"
 		fi
-		while [ $# -gt 0 ]; do
-			# Skip assignment vars
-			while [ $# -gt 0 ] && [ "${1}" = "${assign_var}" ]; do
-				shift
+		while [ "$#" -gt 0 ]; do
+			# Skip assignment vars.
+			while [ "$#" -gt 0 ]; do
+				case "${1}" in
+				"${assign_var}")
+					shift
+					;;
+				*)
+					break
+					;;
+				esac
 			done
-			if [ $# -gt 0 ]; then
-				setvar "$1" "" || return $?
+			if [ "$#" -gt 0 ]; then
+				setvar "$1" "" || return "$?"
 				shift
 			fi
 		done
-	fi
+		;;
+	esac
 
-	return ${ret}
+	return "${pvf_ret}"
 }
 
 port_var_fetch_originspec() {
@@ -8756,7 +8919,7 @@ generate_queue_pkg() {
 	{
 		echo "run:${pkgname} build:${pkgname}"
 		for deps_type in build run; do
-			shash_remove "pkgname-deps-${deps_type}" "${pkgname}" \
+			shash_get "pkgname-deps-${deps_type}" "${pkgname}" \
 			    deps ||
 			    err 1 "generate_queue_pkg failed to find deps-${deps_type} for ${COLOR_PORT}${pkgname}${COLOR_RESET}"
 			for dep_originspec in ${deps}; do
@@ -9507,7 +9670,8 @@ trim_ignored_pkg() {
 	local ignore="$3"
 	local origin flavor subpkg logfile
 
-	if ! noclobber shash_set pkgname-trim_ignored "${pkgname}" 1; then
+	if ! noclobber shash_set pkgname-trim_ignored \
+	    "${pkgname}" 1 2>/dev/null; then
 		msg_debug "trim_ignored_pkg: Skipping duplicate ${pkgname}"
 		return 0
 	fi
@@ -9786,6 +9950,7 @@ prepare_ports() {
 			P_PKG_ABI="$(injail ${PKG_BIN:?} config ABI)" || \
 			    err 1 "Failure looking up pkg ABI"
 		fi
+		determine_base_shlibs
 		delete_old_pkgs
 
 		# PKG_NO_VERSION_FOR_DEPS still uses this to trim out old
@@ -9816,7 +9981,6 @@ prepare_ports() {
 			    pkgname-options \
 			    pkgname-deps \
 			    pkgname-deps-build \
-			    pkgname-deps-run \
 			    pkgname-run_deps \
 			    pkgname-lib_deps \
 			    pkgname-prefix \
@@ -10371,6 +10535,7 @@ for val in ${USE_TMPFS}; do
 	data) TMPFS_DATA=1 ;;
 	all) TMPFS_ALL=1 ;;
 	localbase) TMPFS_LOCALBASE=1 ;;
+	image) TMPFS_IMAGE=1 ;;
 	yes)
 		TMPFS_WRKDIR=1
 		TMPFS_DATA=1
@@ -10393,6 +10558,7 @@ set."")
 		esac
 		msg_warn "MUTABLE_BASE=${val} is deprecated. Change to IMMUTABLE_BASE=${IMMUTABLE_BASE}"
 	done
+	unset val
 	;;
 esac
 
@@ -10403,6 +10569,7 @@ for val in ${IMMUTABLE_BASE-}; do
 		*) err 1 "Unknown value for IMMUTABLE_BASE" ;;
 	esac
 done
+unset val
 
 case ${TMPFS_WRKDIR}${TMPFS_DATA}${TMPFS_LOCALBASE}${TMPFS_ALL} in
 1**1|*1*1|**11)
@@ -10515,16 +10682,16 @@ case "${LOIP6:+set}.${LOIP4:+set}" in
 esac
 case "${IPS:?}" in
 01)
-	localipargs="${LOIP6:+ip6.addr=${LOIP6}}"
-	ipargs="ip6=inherit"
+	LOCALIPARGS="${LOIP6:+ip6.addr=${LOIP6}}"
+	IPARGS="ip6=inherit"
 	;;
 10)
-	localipargs="${LOIP4:+ip4.addr=${LOIP4}}"
-	ipargs="ip4=inherit"
+	LOCALIPARGS="${LOIP4:+ip4.addr=${LOIP4}}"
+	IPARGS="ip4=inherit"
 	;;
 11)
-	localipargs="${LOIP4:+ip4.addr=${LOIP4} }${LOIP6:+ip6.addr=${LOIP6}}"
-	ipargs="ip4=inherit ip6=inherit"
+	LOCALIPARGS="${LOIP4:+ip4.addr=${LOIP4} }${LOIP6:+ip6.addr=${LOIP6}}"
+	IPARGS="ip4=inherit ip6=inherit"
 	;;
 esac
 

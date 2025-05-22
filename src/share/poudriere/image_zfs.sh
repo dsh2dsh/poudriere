@@ -45,7 +45,7 @@ zfs_check()
 	zpool list -Ho name ${zroot} >/dev/null 2>&1 && \
 		err 1 "Temporary pool name already exists"
 	case "${IMAGENAME}" in
-	''|*[!A-Za-z0-9]*)
+	''|*[!A-Za-z0-9_.-]*)
 		err 1 "Name can only contain alphanumeric characters"
 		;;
 	esac
@@ -175,7 +175,7 @@ zfs_generate()
 			gptboot="-p freebsd-boot:=${gptbootfilename}"
 		fi
 		mkimg -s gpt ${pmbr} \
-			  -p efi:=${espfilename} \
+			  -p efi/efiboot0:=${espfilename} \
 			  ${gptboot} \
 			  ${SWAPFIRST} \
 			  -p freebsd-zfs:=${zfsimage} \

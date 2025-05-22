@@ -1,6 +1,7 @@
 MOSTLYCLEANFILES=
 MOSTLYCLEANFILES+=	$(TEST_LOGS:.log=.log.truss)
 MOSTLYCLEANFILES+=	$(TEST_LOGS:.log=*.log)
+MOSTLYCLEANFILES+=	prep.sh.trs prep.sh.log
 
 EXTRA_DIST= $(TESTS) \
 	    $(JAIL_TESTS) \
@@ -43,6 +44,7 @@ TESTS=\
 	gsub.sh \
 	hash_basic.sh \
 	hash_stack.sh \
+	herepipe.sh \
 	jobs.sh \
 	list.sh \
 	locked_mkdir.sh \
@@ -81,7 +83,9 @@ TESTS=\
 	relpath.sh \
 	relpath_common.sh \
 	required_env.sh \
+	setvar.sh \
 	shash_basic.sh \
+	shellcheck.sh \
 	stack.sh \
 	stripansi.sh \
 	test_contexts.sh \
@@ -202,12 +206,12 @@ TESTS+=	prep.sh
 $(JAIL_TESTS:.sh=.sh.log): prep.sh.log
 
 run_env= env \
-	 abs_top_builddir="$(abs_top_builddir)" \
-	 abs_top_srcdir="$(abs_top_srcdir)" \
-	 bindir="$(bindir)" \
-	 pkglibexecdir="$(pkglibexecdir)" \
-	 pkgdatadir="$(pkgdatadir)" \
-	 VPATH="$(VPATH)" \
+	 am_abs_top_builddir="$(abs_top_builddir)" \
+	 am_abs_top_srcdir="$(abs_top_srcdir)" \
+	 am_bindir="$(bindir)" \
+	 am_pkglibexecdir="$(pkglibexecdir)" \
+	 am_pkgdatadir="$(pkgdatadir)" \
+	 am_VPATH="$(VPATH)" \
 	 am_check=1
 LOG_COMPILER=	$(run_env) $(SHELL) $(srcdir)/runtest.sh
 

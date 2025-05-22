@@ -191,8 +191,7 @@ catch_err() {
 		CAUGHT_ERR_STATUS="${ret}"
 		case "${TEST_OVERRIDE_ERR:-1}" in
 		1)
-			read_file CAUGHT_ERR_MSG "${ERR_CHECK}" ||
-			    err "${EX_SOFTWARE}" "catch_err: Failed to read ${ERR_CHECK}"
+			CAUGHT_ERR_MSG="$(cat "${ERR_CHECK}")"
 			unlink "${ERR_CHECK}"
 			ERR_CHECK="$(mktemp -ut err)"
 			;;
@@ -554,3 +553,4 @@ if [ -r "${abs_top_srcdir}/.git" ] &&
     git_get_hash_and_dirty "${abs_top_srcdir}" 0 git_hash git_dirty; then
 	msg "Source git hash: ${git_hash} modified: ${git_dirty}"
 fi >&2
+unset git_hash git_dirty

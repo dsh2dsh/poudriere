@@ -1,5 +1,5 @@
 set -e
-. common.sh
+. ./common.sh
 set +e
 
 set_pipefail
@@ -49,6 +49,24 @@ writer() {
 	rm -f "${TMP}"
 }
 
+{
+	TMP=$(mktemp -u)
+	TMP2=$(mktemp -u)
+	TMP3=$(mktemp -u)
+	assert_false mapfile file_read "${TMP}" "re"
+	:> "${TMP}"
+	assert_true mapfile file_read "${TMP}" "re"
+	assert_false test -r "${TMP2}"
+	assert_true mapfile file_write1 "${TMP2}" "ae"
+	assert_true test -r "${TMP2}"
+	assert_true mapfile file_write2 "${TMP3}" "we"
+	assert_true test -r "${TMP3}"
+	assert_true mapfile_close "${file_write2}"
+	assert_true mapfile_close "${file_write1}"
+	assert_true mapfile_close "${file_read}"
+	rm -f "${TMP}" "${TMP2}" "${TMP3}"
+}
+
 # non-builtin can still do writing to multiple files concurrently. Just
 # not reading.
 {
@@ -68,6 +86,7 @@ writer() {
 	assert_true mapfile file_read "${TMP}" "re"
 	assert_true mapfile file_write1 "${TMP2}" "ae"
 	assert_true mapfile file_write2 "${TMP3}" "we"
+	assert_false catch_err mapfile_read "${file_write2}" blah
 	assert_true mapfile_write "${file_write1}" "file_write1"
 	assert_true mapfile_write "${file_write2}" "file_write2"
 	assert_true mapfile_read "${file_read}" line
@@ -995,6 +1014,31 @@ fi
 	assert_file "${TMP}" "${TMP}.2"
 	assert_ret 0 mapfile_close "${ps_handle}"
 	#assert_ret_not 0 kill -0 "$!"
+}
+
+{
+	TMP="$(mktemp)"
+	cat > "${TMP}" <<-EOF
+	1 2
+	3 4
+	5
+	6 7 8
+	EOF
+	assert_true mapfile f_out /dev/stdout "w"
+	while mapfile_read_loop "${TMP}" a b; do
+		assert_true mapfile_write "${f_out}" "a=${a} b=${b}"
+	done > "${TMP}.2"
+	assert_true mapfile_close "${f_out}"
+	assert_file - "${TMP}.2" <<-EOF
+	a=1 b=2
+	a=3 b=4
+	a=5 b=
+	a=6 b=7 8
+	EOF
+	rm -f "${TMP}" "${TMP}.2"
+	assert_true hash_assert_no_vars "file*"
+	assert_true hash_assert_no_vars "it*"
+	assert_true hash_assert_no_vars "mapfile*"
 }
 
 exit 0

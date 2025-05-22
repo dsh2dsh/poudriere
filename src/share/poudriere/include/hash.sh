@@ -22,10 +22,12 @@
 # OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 # SUCH DAMAGE.
 
+# shellcheck shell=ksh
+
 # Taken from bin/sh/mksyntax.sh is_in_name()
-: ${HASH_VAR_NAME_SUB_GLOB:="[!a-zA-Z0-9_]"}
-: ${HASH_VAR_NAME_PREFIX:="_HASH_"}
-: ${STACK_SEP:=$'\002'}
+: "${HASH_VAR_NAME_SUB_GLOB:="[!a-zA-Z0-9_]"}"
+: "${HASH_VAR_NAME_PREFIX:="_HASH_"}"
+: "${STACK_SEP:="$'\002'"}"
 
 if ! type eargs 2>/dev/null >&2; then
 	eargs() {
@@ -46,22 +48,32 @@ if ! type _gsub 2>/dev/null >&2; then
 # Based on Shell Scripting Recipes - Chris F.A. Johnson (c) 2005
 # Replace a pattern without needing a subshell/exec
 _gsub() {
-	[ $# -eq 3 -o $# -eq 4 ] || eargs _gsub string pattern replacement \
-	    [var_return]
-	local string="$1"
-	local pattern="$2"
-	local replacement="$3"
-	local var_return="${4:-_gsub}"
-	local result_l= result_r="${string}"
+	[ "$#" -eq 3 ] || [ "$#" -eq 4 ] ||
+	    eargs _gsub string pattern replacement '[var_return]'
+	local gsub_str="$1"
+	local gsub_pat="$2"
+	local gsub_repl="$3"
+	local gsub_out_var="${4:-_gsub}"
+	local gsub_res_l gsub_res_r
 
-	case "${pattern:+set}" in
+	gsub_res_l=
+	gsub_res_r="${gsub_str}"
+
+	# Trying to match everything really means any char.
+	# Without this we get into an infinite loop on this case.
+	case "${gsub_pat}" in
+	"*") gsub_pat="?" ;;
+	esac
+
+	case "${gsub_pat:+set}" in
 	set)
 		while :; do
-			# shellcheck disable=SC2295
-			case ${result_r} in
-			*${pattern}*)
-				result_l=${result_l}${result_r%%${pattern}*}${replacement}
-				result_r=${result_r#*${pattern}}
+			case ${gsub_res_r} in
+			*${gsub_pat}*)
+				# shellcheck disable=SC2295
+				gsub_res_l=${gsub_res_l}${gsub_res_r%%${gsub_pat}*}${gsub_repl}
+				# shellcheck disable=SC2295
+				gsub_res_r=${gsub_res_r#*${gsub_pat}}
 				;;
 			*)
 				break
@@ -71,7 +83,7 @@ _gsub() {
 		;;
 	esac
 
-	setvar "${var_return}" "${result_l}${result_r}"
+	setvar "${gsub_out_var}" "${gsub_res_l}${gsub_res_r}"
 }
 fi
 
@@ -100,7 +112,10 @@ _gsub_badchars() {
 		esac
 	done
 	case "${badchars}" in
-	*-*) _gsub "${badchars}" "-" "" badchars ;;
+	*-*)
+		_gsub "${badchars}" "-" "" badchars
+		badchars="${badchars}-"
+		;;
 	esac
 
 	_gsub "${string}" "[${badchars}]" _ "${var_return}"
@@ -123,50 +138,111 @@ _hash_var_name() {
 	_gsub_var_name "${HASH_VAR_NAME_PREFIX}B${1}_K${2}" _hash_var_name
 }
 
+hash_vars() {
+	local -; set +x
+	[ "$#" -eq 3 ] || [ "$#" -eq 2 ] ||
+	    eargs hash_vars var_return 'var|*' 'key|*'
+	local _hash_vars_return="$1"
+	local _hash_vars_var="$2"
+	local _hash_vars_key="${3:-*}"
+	local _hash_vars_list hv_line hv_lkey
+
+	_hash_vars_list=
+	while read -r hv_line; do
+		# shellcheck disable=SC2027
+		case "${hv_line}" in
+		"${HASH_VAR_NAME_PREFIX:?}B"${_hash_vars_var:?}"_K"${_hash_vars_key:?}"="*)
+			# shellcheck disable=SC2295
+			hv_line="${hv_line#"${HASH_VAR_NAME_PREFIX:?}"B}"
+			hv_line="${hv_line%%=*}"
+			hv_lkey="${hv_line}"
+			hv_lkey="${hv_line##*_K}"
+			hv_line="${hv_line%%_K*}"
+			_hash_vars_list="${_hash_vars_list:+${_hash_vars_list} }${hv_line:?}:${hv_lkey:?}"
+			;;
+		esac
+	done <<-EOF
+	$(set)
+	EOF
+	case "${_hash_vars_return:?}" in
+	""|"-")
+		case "${_hash_vars_list?}" in
+		"") ;;
+		*)
+			echo "${_hash_vars_list?}"
+			;;
+		esac
+		;;
+	*)
+		setvar "${_hash_vars_return:?}" "${_hash_vars_list?}" ||
+		    return
+		;;
+	esac
+	case "${_hash_vars_list?}" in
+	"")
+		return 1
+		;;
+	esac
+	return 0
+}
+
+hash_assert_no_vars() {
+       local -; set +x
+       [ "$#" -eq 1 ] || [ "$#" -eq 2 ] ||
+           eargs hash_assert_no_vars 'var|*' 'key|*'
+       local hanv_var="$1"
+       local hanv_key="${2-}"
+       local hanv_vars
+
+       if ! hash_vars hanv_vars "${hanv_var:?}" "${hanv_key}"; then
+               return 0
+       fi
+       for hanv_var in ${hanv_vars}; do
+	       msg_warn "Leaked hash var: ${hanv_var}"
+       done
+       return 1
+}
+
 hash_isset() {
 	local -; set +x
 	[ $# -eq 2 ] || eargs hash_isset var key
-	local _var="$1"
-	local _key="$2"
+	local hi_var="$1"
+	local hi_key="$2"
 	local _hash_var_name
 
-	_hash_var_name "${_var}" "${_key}"
-	issetvar "${_hash_var_name}"
+	_hash_var_name "${hi_var}" "${hi_key}"
+	isset "${_hash_var_name}"
 }
 
 hash_isset_var() {
 	local -; set +x
 	[ $# -eq 1 ] || eargs hash_isset_var var
-	local _var="$1"
-	local _line _hash_var_name ret IFS
+	local hiv_var="$1"
+	local hiv_line _hash_var_name IFS
+	local -
 
-	_hash_var_name "${_var}" ""
-	ret=1
-	while IFS= mapfile_read_loop_redir _line; do
-		# XXX: mapfile_read_loop can't safely return/break
-		if [ "${ret}" -eq 0 ]; then
-			continue
-		fi
-		case "${_line}" in
+	set -o noglob
+	_hash_var_name "${hiv_var}" ""
+	while IFS= mapfile_read_loop_redir hiv_line; do
+		case "${hiv_line}" in
 		${_hash_var_name}*=*)
-			ret=0
+			return 0
 			;;
-		*) continue ;;
 		esac
 	done <<-EOF
 	$(set)
 	EOF
-	return "${ret}"
+	return 1
 }
 
 hash_get() {
 	local -; set +x
-	[ $# -eq 3 ] || eargs hash_get var key var_return
-	local _var="$1"
-	local _key="$2"
+	[ $# -eq 3 ] || eargs hash_get var key var_return EARGS: "$@"
+	local hg_var="$1"
+	local hg_key="$2"
 	local _hash_var_name
 
-	_hash_var_name "${_var}" "${_key}"
+	_hash_var_name "${hg_var}" "${hg_key}"
 	getvar "${_hash_var_name}" "${3}"
 }
 
@@ -183,7 +259,7 @@ hash_push_front() {
 	local _hash_var_name
 
 	_hash_var_name "${hpf_var}" "${hpf_key}"
-	stack_push "${_hash_var_name}" "${hpf_value}" || return "$?"
+	stack_push "${_hash_var_name}" "${hpf_value}"
 }
 
 hash_push_back() {
@@ -195,7 +271,7 @@ hash_push_back() {
 	local _hash_var_name
 
 	_hash_var_name "${hp_var}" "${hp_key}"
-	stack_push_back "${_hash_var_name}" "${hp_value}" || return "$?"
+	stack_push_back "${_hash_var_name}" "${hp_value}"
 }
 
 hash_pop() {
@@ -211,7 +287,7 @@ hash_pop_front() {
 	local _hash_var_name
 
 	_hash_var_name "${hpf_var}" "${hpf_key}"
-	stack_pop "${_hash_var_name}" "${hpf_var_return}" || return "$?"
+	stack_pop "${_hash_var_name}" "${hpf_var_return}"
 }
 
 hash_pop_back() {
@@ -223,7 +299,7 @@ hash_pop_back() {
 	local _hash_var_name
 
 	_hash_var_name "${hp_var}" "${hp_key}"
-	stack_pop_back "${_hash_var_name}" "${hp_var_return}" || return "$?"
+	stack_pop_back "${_hash_var_name}" "${hp_var_return}"
 }
 
 hash_foreach() {
@@ -240,8 +316,7 @@ hash_foreach_front() {
 	local _hash_var_name
 
 	_hash_var_name "${hff_var}" "${hff_key}"
-	stack_foreach "${_hash_var_name}" "${hff_var_return}" "${hff_tmp_var}" ||
-	    return "$?"
+	stack_foreach "${_hash_var_name}" "${hff_var_return}" "${hff_tmp_var}"
 }
 
 hash_foreach_back() {
@@ -255,63 +330,82 @@ hash_foreach_back() {
 
 	_hash_var_name "${hfb_var}" "${hfb_key}"
 	stack_foreach_back "${_hash_var_name}" "${hfb_var_return}" \
-	    "${hfb_tmp_var}" || return "$?"
+	    "${hfb_tmp_var}"
 }
 
 hash_set() {
-	local -; set +x
+	local -; set +x -u
 	[ $# -eq 3 ] || eargs hash_set var key value
-	local _var="$1"
-	local _key="$2"
-	local _value="$3"
+	local hash_set_var="$1"
+	local hash_set_key="$2"
+	local hash_set_val="$3"
 	local _hash_var_name
 
-	_hash_var_name "${_var}" "${_key}"
-	setvar "${_hash_var_name}" "${_value}"
+	_hash_var_name "${hash_set_var}" "${hash_set_key}"
+	case "$-" in
+	*C*)
+		# noclobber is set.
+		# - Only set the value if it was not already set.
+		# - Return error if already set.
+		if isset "${_hash_var_name}"; then
+			return 1
+		fi
+	esac
+	setvar "${_hash_var_name}" "${hash_set_val}"
 }
 
+# Similar to hash_unset but returns the value or error if not set.
 hash_remove() {
-	local -; set +x
-	[ $# -eq 3 ] || eargs hash_remove var key var_return
-	local _var="$1"
-	local _key="$2"
-	local var_return="$3"
-	local _hash_var_name ret
+	local -; set +x -u
+	[ "$#" -eq 3 ] || [ "$#" -eq 2 ] ||
+	    eargs hash_remove var key '[var_return]'
+	local hr_var="$1"
+	local hr_key="$2"
+	local hr_var_return="${3-}"
+	local _hash_var_name hr_val hr_ret
 
-	_hash_var_name "${_var}" "${_key}"
-	ret=0
-	getvar "${_hash_var_name}" "${var_return}" || ret=$?
-	if [ ${ret} -eq 0 ]; then
-		unset "${_hash_var_name}"
-	fi
-	return ${ret}
+	_hash_var_name "${hr_var}" "${hr_key}"
+	hr_ret=0
+	getvar "${_hash_var_name}" hr_val || hr_ret="$?"
+	unset "${_hash_var_name}"
+	case "${hr_ret}" in
+	0) ;;
+	*)
+		return "${hr_ret}"
+		;;
+	esac
+	case "${hr_var_return}" in
+	"") ;;
+	*) setvar "${hr_var_return}" "${hr_val}" || return ;;
+	esac
+	return "${hr_ret}"
 }
 
 hash_unset() {
 	local -; set +x
 	[ $# -eq 2 ] || eargs hash_unset var key
-	local _var="$1"
-	local _key="$2"
+	local hu_var="$1"
+	local hu_key="$2"
 	local _hash_var_name
 
-	_hash_var_name "${_var}" "${_key}"
+	_hash_var_name "${hu_var}" "${hu_key}"
 	unset "${_hash_var_name}"
 }
 
 hash_unset_var() {
 	local -; set +x
 	[ $# -eq 1 ] || eargs hash_unset_var var
-	local _var="$1"
-	local _key _line _hash_var_name
+	local huv_var="$1"
+	local huv_key huv_line _hash_var_name
 
-	_hash_var_name "${_var}" ""
-	while IFS= mapfile_read_loop_redir _line; do
-		case "${_line}" in
+	_hash_var_name "${huv_var}" ""
+	while IFS= mapfile_read_loop_redir huv_line; do
+		case "${huv_line}" in
 		"${_hash_var_name}"*=*) ;;
 		*) continue ;;
 		esac
-		_key="${_line%%=*}"
-		unset "${_key}"
+		huv_key="${huv_line%%=*}"
+		unset "${huv_key}"
 	done <<-EOF
 	$(set)
 	EOF
@@ -320,41 +414,41 @@ hash_unset_var() {
 list_contains() {
 	local -; set +x
 	[ $# -eq 2 ] || eargs list_contains var item
-	local _var="$1"
-	local item="$2"
-	local _value
+	local lc_var="$1"
+	local lc_item="$2"
+	local lc_val
 
-	getvar "${_var}" _value || _value=
-	case " ${_value} " in *" ${item} "*) ;; *) return 1 ;; esac
+	getvar "${lc_var}" lc_val || lc_val=
+	case " ${lc_val} " in *" ${lc_item} "*) ;; *) return 1 ;; esac
 	return 0
 }
 
 list_add() {
 	local -; set +x
 	[ $# -eq 2 ] || eargs list_add var item
-	local _var="$1"
-	local item="$2"
-	local _value
+	local la_var="$1"
+	local la_item="$2"
+	local la_value
 
-	getvar "${_var}" _value || _value=
-	case " ${_value} " in *" ${item} "*) return 0 ;; esac
-	setvar "${_var}" "${_value:+${_value} }${item}"
+	getvar "${la_var}" la_value || la_value=
+	case " ${la_value} " in *" ${la_item} "*) return 0 ;; esac
+	setvar "${la_var}" "${la_value:+${la_value} }${la_item}"
 }
 
 list_remove() {
 	local -; set +x
 	[ $# -eq 2 ] || eargs list_remove var item
-	local _var="$1"
-	local item="$2"
-	local _value newvalue
+	local lr_var="$1"
+	local lr_item="$2"
+	local lr_val lr_newval
 
-	getvar "${_var}" _value || _value=
-	_value=" ${_value} "
-	case "${_value}" in *" ${item} "*) ;; *) return 1 ;; esac
-	newvalue="${_value% "${item}" *} ${_value##* "${item}" }"
-	newvalue="${newvalue# }"
-	newvalue="${newvalue% }"
-	setvar "${_var}" "${newvalue}"
+	getvar "${lr_var}" lr_val || lr_val=
+	lr_val=" ${lr_val} "
+	case "${lr_val}" in *" ${lr_item} "*) ;; *) return 1 ;; esac
+	lr_newval="${lr_val% "${lr_item}" *} ${lr_val##* "${lr_item}" }"
+	lr_newval="${lr_newval# }"
+	lr_newval="${lr_newval% }"
+	setvar "${lr_var}" "${lr_newval}"
 }
 
 stack_push() {
@@ -369,7 +463,8 @@ stack_push_front() {
 	local spf_value
 
 	getvar "${spf_var}" spf_value || spf_value=
-	setvar "${spf_var}" "${spf_item}${spf_value:+${STACK_SEP}${spf_value}}"
+	setvar "${spf_var}" \
+	    "${spf_item}${spf_value:+${STACK_SEP}${spf_value}}" || return
 	incrvar "${spf_var}_count"
 }
 
@@ -381,7 +476,8 @@ stack_push_back() {
 	local spb_value
 
 	getvar "${spb_var}" spb_value || spb_value=
-	setvar "${spb_var}" "${spb_value:+${spb_value}${STACK_SEP}}${spb_item}"
+	setvar "${spb_var}" \
+	    "${spb_value:+${spb_value}${STACK_SEP}}${spb_item}" || return
 	incrvar "${spb_var}_count"
 }
 
@@ -400,23 +496,23 @@ stack_pop_front() {
 	case "${spf_value}" in
 	"")
 		# In a for loop
-		setvar "${spf_item_var_return}" ""
+		setvar "${spf_item_var_return}" "" || return
 		unset "${spf_var}" "${spf_var}_count"
 		return 1
 		;;
 	esac
-	spf_item="${spf_value%%${STACK_SEP}*}"
+	spf_item="${spf_value%%"${STACK_SEP}"*}"
 	case "${spf_item}" in
 	"${spf_value}" )
 		# Last pop
 		spf_value=""
 		;;
 	*)
-		spf_value="${spf_value#*${STACK_SEP}}"
+		spf_value="${spf_value#*"${STACK_SEP}"}"
 		;;
 	esac
-	setvar "${spf_var}" "${spf_value}"
-	decrvar "${spf_var}_count"
+	setvar "${spf_var}" "${spf_value}" || return
+	decrvar "${spf_var}_count" || return
 	setvar "${spf_item_var_return}" "${spf_item}"
 }
 
@@ -436,18 +532,18 @@ stack_pop_back() {
 		return 1
 		;;
 	esac
-	spb_item="${spb_value##*${STACK_SEP}}"
+	spb_item="${spb_value##*"${STACK_SEP}"}"
 	case "${spb_item}" in
 	"${spb_value}" )
 		# Last pop
 		spb_value=""
 		;;
 	*)
-		spb_value="${spb_value%${STACK_SEP}*}"
+		spb_value="${spb_value%"${STACK_SEP}"*}"
 		;;
 	esac
-	setvar "${spb_var}" "${spb_value}"
-	decrvar "${spb_var}_count"
+	setvar "${spb_var}" "${spb_value}" || return
+	decrvar "${spb_var}_count" || return
 	setvar "${spb_item_var_return}" "${spb_item}"
 }
 
@@ -461,13 +557,18 @@ stack_foreach_front() {
 	local sff_var="$1"
 	local sff_item_var_return="$2"
 	local sff_tmp_var="$3"
-	local sff_tmp_stack
+	local sff_tmp_stack sff_tmp_stack_count
 
 	if ! getvar "${sff_tmp_var}" sff_tmp_stack; then
 		getvar "${sff_var}" sff_tmp_stack || return 1
 	fi
+	if ! getvar "${sff_tmp_var}_count" sff_tmp_stack_count; then
+		getvar "${sff_var}_count" sff_tmp_stack_count || return 1
+	fi
 	if stack_pop sff_tmp_stack "${sff_item_var_return}"; then
-		setvar "${sff_tmp_var}" "${sff_tmp_stack-}"
+		setvar "${sff_tmp_var}" "${sff_tmp_stack-}" || return
+		setvar "${sff_tmp_var}_count" "${sff_tmp_stack_count-}" ||
+		    return
 		return 0
 	else
 		unset "${sff_tmp_var}"
@@ -481,18 +582,31 @@ stack_foreach_back() {
 	local sf_var="$1"
 	local sf_item_var_return="$2"
 	local sf_tmp_var="$3"
-	local sf_tmp_stack
+	local sf_tmp_stack sf_tmp_stack_count
 
 	if ! getvar "${sf_tmp_var}" sf_tmp_stack; then
 		getvar "${sf_var}" sf_tmp_stack || return 1
 	fi
+	if ! getvar "${sf_tmp_var}_count" sf_tmp_stack_count; then
+		getvar "${sf_var}_count" sf_tmp_stack_count || return 1
+	fi
 	if stack_pop_back sf_tmp_stack "${sf_item_var_return}"; then
-		setvar "${sf_tmp_var}" "${sf_tmp_stack-}"
+		setvar "${sf_tmp_var}" "${sf_tmp_stack-}" || return
+		setvar "${sf_tmp_var}_count" "${sf_tmp_stack_count-}" ||
+		    return
 		return 0
 	else
 		unset "${sf_tmp_var}"
 		return 1
 	fi
+}
+
+stack_isset() {
+	local -; set +x
+	[ "$#" -eq 1 ] || eargs stack_isset stack_var
+	local si_var="$1"
+
+	isset "${si_var}_count"
 }
 
 stack_size() {
@@ -506,7 +620,7 @@ stack_size() {
 	getvar "${ss_var}_count" ss_count || ss_count=0
 	case "${ss_var_return}" in
 	""|-) echo "${ss_count}" ;;
-	*) setvar "${ss_var_return}" "${ss_count}" ;;
+	*) setvar "${ss_var_return}" "${ss_count}" || return ;;
 	esac
 }
 
@@ -526,10 +640,11 @@ stack_set() {
 	local si_data="${3-}"
 	local IFS -
 
-	set -f
 	IFS="${si_separator:?}"
+	set -o noglob
+	# shellcheck disable=SC2086
 	set -- ${si_data}
-	set +f
+	set +o noglob
 	unset IFS
 	stack_set_args "${si_stack_var}" "$@"
 }
@@ -545,14 +660,14 @@ stack_set_args() {
 	IFS="${STACK_SEP}"
 	si_output="$*"
 	unset IFS
-	setvar "${si_stack_var}_count" "$#"
+	setvar "${si_stack_var}_count" "$#" || return
 	setvar "${si_stack_var}" "${si_output}"
 }
 
 stack_expand_front() {
 	local -; set +x
 	[ "$#" -eq 2 ] || [ "$#" -eq 3 ] ||
-	    eargs stack_expand_front stack_var separator [var_return_output]
+	    eargs stack_expand_front stack_var separator '[var_return_output]'
 	local sef_stack_var="$1"
 	local sef_separator="$2"
 	local sef_var_return="${3-}"
@@ -560,15 +675,16 @@ stack_expand_front() {
 
 	getvar "${sef_stack_var}" sef_stack || return
 	IFS="${STACK_SEP}"
-	set -f
+	set -o noglob
+	# shellcheck disable=SC2086
 	set -- ${sef_stack}
-	set +f
+	set +o noglob
 	case "${sef_separator}" in
 	?)
 		IFS="${sef_separator}"
 		case "${sef_var_return}" in
 		""|-) echo "$*" ;;
-		*) setvar "${sef_var_return}" "$*" ;;
+		*) setvar "${sef_var_return}" "$*" || return ;;
 		esac
 		unset IFS
 		;;
@@ -580,7 +696,7 @@ stack_expand_front() {
 		    sef_output || return
 		case "${sef_var_return}" in
 		""|-) echo "${sef_output}" ;;
-		*) setvar "${sef_var_return}" "${sef_output}" ;;
+		*) setvar "${sef_var_return}" "${sef_output}" || return ;;
 		esac
 		;;
 	esac
@@ -593,7 +709,7 @@ stack_expand() {
 stack_expand_back() {
 	local -; set +x
 	[ "$#" -eq 2 ] || [ "$#" -eq 3 ] ||
-	    eargs stack_expand_back stack_var separator [var_return_output]
+	    eargs stack_expand_back stack_var separator '[var_return_output]'
 	local seb_stack_var="$1"
 	local seb_separator="$2"
 	local seb_var_return="${3-}"
@@ -602,9 +718,10 @@ stack_expand_back() {
 
 	getvar "${seb_stack_var}" seb_stack || return
 	IFS="${STACK_SEP}"
-	set -f
+	set -o noglob
+	# shellcheck disable=SC2086
 	set -- ${seb_stack}
-	set +f
+	set +o noglob
 	unset IFS
 	seb_output=
 	for seb_item in "$@"; do
@@ -612,7 +729,7 @@ stack_expand_back() {
 	done
 	case "${seb_var_return}" in
 	""|-) echo "${seb_output}" ;;
-	*) setvar "${seb_var_return}" "${seb_output}" ;;
+	*) setvar "${seb_var_return}" "${seb_output}" || return ;;
 	esac
 }
 
@@ -628,7 +745,7 @@ array_isset() {
 		hash_isset "_array_${as_array_var}" "${as_idx}" || return
 		;;
 	*)
-		issetvar "_array_length_${as_array_var}" || return
+		isset "_array_length_${as_array_var}" || return
 		;;
 	esac
 }
@@ -644,7 +761,7 @@ array_size() {
 	getvar "_array_length_${as_array_var}" as_count || as_count=0
 	case "${as_var_return}" in
 	""|-) echo "${as_count}" ;;
-	*) setvar "${as_var_return}" "${as_count}" ;;
+	*) setvar "${as_var_return}" "${as_count}" || return ;;
 	esac
 }
 
@@ -667,7 +784,7 @@ array_set() {
 	shift 2
 
 	if ! array_isset "${as_array_var}" "${as_idx}"; then
-		incrvar "_array_length_${as_array_var}"
+		incrvar "_array_length_${as_array_var}" || return
 	fi
 	hash_set "_array_${as_array_var}" "${as_idx}" "$*"
 }
@@ -678,7 +795,6 @@ array_unset() {
 	    eargs array_unset array_var '[idx]'
 	local au_array_var="$1"
 	local au_idx="$2"
-	local au_count
 
 	case "${au_idx:+set}" in
 	set)
@@ -701,7 +817,7 @@ array_unset_idx() {
 	if ! array_isset "${aui_array_var}" "${aui_idx}"; then
 		return 1
 	fi
-	decrvar "_array_length_${aui_array_var}"
+	decrvar "_array_length_${aui_array_var}" || return
 	hash_unset "_array_${aui_array_var}" "${aui_idx}"
 	if getvar "_array_length_${aui_array_var}" aui_count; then
 		case "${aui_count}" in
@@ -739,7 +855,8 @@ array_pop_back() {
 	local apb_size
 
 	array_size "${apb_array_var}" apb_size || return 1
-	array_get "${apb_array_var}" "$((apb_size - 1))" "${apb_item_var_return}"
+	array_get "${apb_array_var}" "$((apb_size - 1))" \
+	    "${apb_item_var_return}" || return
 	array_unset "${apb_array_var}" "$((apb_size - 1))"
 }
 
@@ -758,7 +875,8 @@ array_foreach_front() {
 	while [ "${aff_tmp_idx}" -lt "${aff_size}" ]; do
 		if array_get "${aff_var}" "${aff_tmp_idx}" \
 		    "${aff_item_var_return}"; then
-			setvar "${aff_tmp_var}" "$((aff_tmp_idx + 1))"
+			setvar "${aff_tmp_var}" "$((aff_tmp_idx + 1))" ||
+			    return
 			return
 		fi
 		aff_tmp_idx="$((aff_tmp_idx + 1))"
