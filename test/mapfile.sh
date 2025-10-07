@@ -213,6 +213,50 @@ if mapfile_builtin; then
 	mapfile_close "${file}"
 }
 
+{
+	rm -f "${TMP}"
+	TMP=$(mktemp -ut mapfile)
+	assert_true mapfile file "${TMP}" "w+x"
+	assert_not "" "${file}" "mapfile file should return handle"
+	assert_true mapfile_write "${file}" "test 1 2 3"
+	assert_true mapfile_close "${file}"
+
+	assert_true mapfile file "${TMP}" "w+"
+	assert_not "" "${file}" "mapfile file should return handle"
+	assert_true mapfile_write "${file}" "test 3 2 1"
+	assert_true mapfile_close "${file}"
+	assert_file - "${TMP}" <<-EOF
+	test 3 2 1
+	EOF
+}
+
+{
+	rm -f "${TMP}"
+	TMP=$(mktemp -ut mapfile)
+	assert_true mapfile file "${TMP}" "w+x"
+	assert_not "" "${file}" "mapfile file should return handle"
+	assert_true mapfile_write "${file}" "test 1 2 3"
+	assert_true mapfile_close "${file}"
+
+	assert_false mapfile file "${TMP}" "wx"
+
+	assert_file - "${TMP}" <<-EOF
+	test 1 2 3
+	EOF
+}
+
+{
+	rm -f "${TMP}"
+	TMP=$(mktemp -ut mapfile)
+	assert_true mapfile file "${TMP}" "w+x"
+	assert_not "" "${file}" "mapfile file should return handle"
+	assert_true mapfile_write "${file}" "test 1 2 3"
+	assert_true mapfile_close "${file}"
+
+	noclobber mapfile file "${TMP}" "w+"
+	assert_not 0 $?
+}
+
 # Now test read setting vars properly.
 {
 	rm -f "${TMP}"
@@ -754,6 +798,50 @@ fi
 {
 	TMP=$(mktemp -t mapfile)
 	TMP2=$(mktemp -t mapfile)
+	TMP3=$(mktemp -t mapfile)
+
+	ps uaxwd > "${TMP}"
+
+	:>"${TMP2}"
+	:>"${TMP3}"
+	assert_ret 0 mapfile read_handle "${TMP}" "re"
+	assert_ret 0 mapfile_cat -T3 "${read_handle}" > "${TMP2}" 3>"${TMP3}"
+	assert_ret 0 mapfile_close "${read_handle}"
+	assert_ret 0 diff -u "${TMP}" "${TMP2}"
+	assert_ret 0 diff -u "${TMP}" "${TMP3}"
+	rm -f "${TMP}" "${TMP2}" "${TMP3}"
+}
+
+{
+	TMP=$(mktemp -t mapfile)
+	TMP2=$(mktemp -t mapfile)
+
+	ps uaxwd > "${TMP}"
+
+	:>"${TMP2}"
+	assert_ret 0 mapfile_cat_file "${TMP}" > "${TMP2}"
+	assert_ret 0 diff -u "${TMP}" "${TMP2}"
+	rm -f "${TMP}" "${TMP2}"
+}
+
+{
+	TMP=$(mktemp -t mapfile)
+	TMP2=$(mktemp -t mapfile)
+	TMP3=$(mktemp -t mapfile)
+
+	ps uaxwd > "${TMP}"
+
+	:>"${TMP2}"
+	:>"${TMP3}"
+	assert_ret 0 mapfile_cat_file -T3 "${TMP}" > "${TMP2}" 3>"${TMP3}"
+	assert_ret 0 diff -u "${TMP}" "${TMP2}"
+	assert_ret 0 diff -u "${TMP}" "${TMP3}"
+	rm -f "${TMP}" "${TMP2}" "${TMP3}"
+}
+
+{
+	TMP=$(mktemp -t mapfile)
+	TMP2=$(mktemp -t mapfile)
 
 	ps uaxwd > "${TMP}"
 
@@ -800,25 +888,6 @@ fi
 	$(cat "${TMP}")
 	EOF
 	assert_ret 0 mapfile_close "${handle}"
-	assert_ret 0 diff -u "${TMP}" "${TMP2}"
-
-	rm -f "${TMP}" "${TMP2}"
-}
-
-{
-	TMP=$(mktemp -t mapfile)
-	TMP2=$(mktemp -t mapfile)
-
-	ps uaxwd > "${TMP}"
-
-	{ cat "${TMP}"; rm -f "${TMP2}"; } | write_atomic "${TMP2}"
-	assert 0 "$?" "pipe exit status"
-	assert_ret 0 diff -u "${TMP}" "${TMP2}"
-
-	rm -f "${TMP2}"
-	assert_ret 0 write_atomic "${TMP2}" <<-EOF
-	$(cat "${TMP}"; rm -f "${TMP2}")
-	EOF
 	assert_ret 0 diff -u "${TMP}" "${TMP2}"
 
 	rm -f "${TMP}" "${TMP2}"

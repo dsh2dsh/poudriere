@@ -497,6 +497,17 @@ cd() {
 	return ${ret}
 }
 
+case "$(type unlink 2>/dev/null)" in
+"unlink is a shell builtin") ;;
+*)
+unlink() {
+	[ $# -eq 2 ] || [ $# -eq 1 ] || eargs unlink '[--]' file
+
+	command unlink "$@" 2>/dev/null || :
+}
+;;
+esac
+
 case "$(type randint 2>/dev/null)" in
 "randint is a shell builtin") ;;
 *)
@@ -561,7 +572,9 @@ trap_ignore_block() {
 }
 
 case "$(type trap_push 2>/dev/null)" in
-"trap_push is a shell builtin") ;;
+"trap_push is a shell builtin")
+critical_inherit() { :; }
+	;;
 *)
 trap_push() {
 	local -; set +x
@@ -627,8 +640,19 @@ critical_start() {
 			setvar "_crit_caught_${sig}" 0 || return
 		fi
 		# shellcheck disable=SC2064
-		trap "_crit_caught_${sig}=1" "${sig}"
+		trap "{ _crit_caught_${sig}=1; } 2>/dev/null" "${sig}"
 		hash_set crit_saved_trap "${sig}-${_CRITSNEST}" "${saved_trap}"
+	done
+}
+
+critical_inherit() {
+	case "${_CRITSNEST:-0}" in
+	0) return 0 ;;
+	esac
+	local sig
+
+	for sig in ${CRITICAL_START_BLOCK_SIGS}; do
+		trap '' "${sig}"
 	done
 }
 
@@ -697,9 +721,12 @@ read_file() {
 			rf_data="$(cat "${rf_file}")" || rf_ret="$?"
 			;;
 		esac
-		count_lines "${rf_file}" _read_file_lines_read ||
-		    _read_file_lines_read=0
-
+		case "${rf_ret}" in
+		0)
+			count_lines "${rf_file}" _read_file_lines_read ||
+			    _read_file_lines_read=0
+			;;
+		esac
 		case "${var_return}" in
 		"") ;;
 		-) echo "${rf_data}" ;;
@@ -901,10 +928,38 @@ read_blocking() {
 	local -; set +x
 	[ $# -ge 1 ] || eargs read_blocking read_args
 	local rb_ret
+	local OPTIND=1 flag tflag timeout time_start now
 
+	tflag=
+	while getopts "t:" flag; do
+		case "${flag}" in
+		t) tflag="${OPTARG:?}" ;;
+		*) err 1 "read_blocking: Invalid flag ${flag}" ;;
+		esac
+	done
+	shift "$((OPTIND-1))"
+	case "${tflag}" in
+	"") ;;
+	*.*) timeout="${tflag}" ;;
+	*) time_start="$(clock -monotonic)" ;;
+	esac
 	while :; do
 		rb_ret=0
-		read -r "$@" || rb_ret="$?"
+		# Adjust timeout
+		case "${tflag}" in
+		""|*.*) ;;
+		*)
+			now="$(clock -monotonic)"
+			timeout="$((tflag - (now - time_start)))"
+			case "${timeout}" in
+			"-"*) timeout=0 ;;
+			esac
+			;;
+		esac
+		set -o noglob
+		# shellcheck disable=SC2086
+		read -r ${tflag:+-t "${timeout}"} "$@" || rb_ret="$?"
+		set +o noglob
 		case ${rb_ret} in
 			# Read again on SIGINFO interrupts
 			157) continue ;;
@@ -926,11 +981,39 @@ read_blocking_line() {
 	local -; set +x
 	[ $# -ge 1 ] || eargs read_blocking_line read_args
 	local rbl_ret IFS
+	local OPTIND=1 flag tflag timeout time_start now
 
+	tflag=
+	while getopts "t:" flag; do
+		case "${flag}" in
+		t) tflag="${OPTARG:?}" ;;
+		*) err 1 "read_blocking_line: Invalid flag ${flag}" ;;
+		esac
+	done
+	shift "$((OPTIND-1))"
+	case "${tflag}" in
+	"") ;;
+	*.*) timeout="${tflag}" ;;
+	*) time_start="$(clock -monotonic)" ;;
+	esac
 	while :; do
 		rbl_ret=0
-		IFS= read -r "$@" || rbl_ret="$?"
-		case ${rbl_ret} in
+		# Adjust timeout
+		case "${tflag}" in
+		""|*.*) ;;
+		*)
+			now="$(clock -monotonic)"
+			timeout="$((tflag - (now - time_start)))"
+			case "${timeout}" in
+			"-"*) timeout=0 ;;
+			esac
+			;;
+		esac
+		set -o noglob
+		# shellcheck disable=SC2086
+		IFS= read -r ${tflag:+-t "${timeout}"} "$@" || rbl_ret="$?"
+		set +o noglob
+		case "${rbl_ret}" in
 			# Read again on SIGINFO interrupts
 			157) continue ;;
 			# Valid EOF
@@ -951,9 +1034,23 @@ read_pipe() {
 	[ $# -ge 2 ] || eargs read_pipe fifo read_args
 	local fifo="$1"
 	local rp_ret resread resopen
+	local OPTIND=1 flag tflag timeout time_start now
 	shift
 
 	rp_ret=0
+	tflag=
+	while getopts "t:" flag; do
+		case "${flag}" in
+		t) tflag="${OPTARG:?}" ;;
+		*) err 1 "read_pipe: Invalid flag ${flag}" ;;
+		esac
+	done
+	shift "$((OPTIND-1))"
+	case "${tflag}" in
+	"") ;;
+	*.*) timeout="${tflag}" ;;
+	*) time_start="$(clock -monotonic)" ;;
+	esac
 	while :; do
 		if ! [ -p "${fifo}" ]; then
 			rp_ret=32
@@ -963,8 +1060,23 @@ read_pipe() {
 		# since opening the pipe blocks and may be interrupted.
 		resread=0
 		resopen=0
-		{ { read -r "$@" || resread=$?; } < "${fifo}" || resopen=$?; } \
+		# Adjust timeout
+		case "${tflag}" in
+		""|*.*) ;;
+		*)
+			now="$(clock -monotonic)"
+			timeout="$((tflag - (now - time_start)))"
+			case "${timeout}" in
+			"-"*) timeout=0 ;;
+			esac
+			;;
+		esac
+		set -o noglob
+		# shellcheck disable=SC2086
+		{ { read -r ${tflag:+-t "${timeout}"} "$@" || resread=$?; } \
+		    < "${fifo}" || resopen=$?; } \
 		    2>/dev/null
+		set +o noglob
 		msg_dev "read_pipe ${fifo}: resread=${resread} resopen=${resopen}"
 		# First check the open errors
 		case ${resopen} in
@@ -998,15 +1110,41 @@ read_pipe_noeof() {
 	local fifo="$1"
 	local rpn_ret
 	shift
+	local OPTIND=1 flag tflag timeout time_start now
 
+	tflag=
+	while getopts "t:" flag; do
+		case "${flag}" in
+		t) tflag="${OPTARG:?}" ;;
+		*) err 1 "read_pipe_noeof: Invalid flag ${flag}" ;;
+		esac
+	done
+	shift "$((OPTIND-1))"
+	case "${tflag}" in
+	"") ;;
+	*.*) timeout="${tflag}" ;;
+	*) time_start="$(clock -monotonic)" ;;
+	esac
 	while :; do
 		rpn_ret=0
-		read_pipe "${fifo}" "$@" || rpn_ret="$?"
+		# Adjust timeout
+		case "${tflag}" in
+		""|*.*) ;;
+		*)
+			now="$(clock -monotonic)"
+			timeout="$((tflag - (now - time_start)))"
+			case "${timeout}" in
+			"-"*) timeout=0 ;;
+			esac
+			;;
+		esac
+		set -o noglob
+		# shellcheck disable=SC2086
+		read_pipe "${fifo}" ${tflag:+-t "${timeout}"} "$@" || rpn_ret="$?"
+		set +o noglob
 		case "${rpn_ret}" in
 		1) ;;
-		*)
-			break
-			;;
+		*) break ;;
 		esac
 	done
 	return "${rpn_ret}"
@@ -1048,7 +1186,7 @@ _pipe_hold_exit() {
 }
 
 _pipe_hold_child() {
-	[ $# -ge 3 ] || eargs _pipe_hold_child watch_pid sync_fifo fifos...
+	[ $# -ge 3 ] || eargs _pipe_hold_child sync_fifo watch_pid fifos...
 	local sync_fifo="$1"
 	local watch_pid="$2"
 	shift 2
@@ -1074,6 +1212,8 @@ _pipe_hold_child() {
 }
 
 # This keeps the given fifos open to avoid EOF in writers.
+# If the watch_pid exits then the holder will exit automatically.
+# Use watch_pid==1 to keep the pipe open until explicitly killing the holder.
 pipe_hold() {
 	[ $# -ge 3 ] || eargs pipe_hold var_return_jobid watch_pid fifos...
 	local var_return_jobid="$1"
@@ -1251,16 +1391,16 @@ mapfile() {
 		"${_hkey}")
 			case " ${_modes} " in
 			*r*w*|*w*r*|*+*)
-				exec 8<> "${_file}" || ret="$?"
+				exec 7<> "${_file}" || ret="$?"
 				;;
 			*r*)
-				exec 8< "${_file}" || ret="$?"
+				exec 7< "${_file}" || ret="$?"
 				;;
 			*w*|*a*)
-				exec 8> "${_file}" || ret="$?"
+				exec 7> "${_file}" || ret="$?"
 				;;
 			esac
-			hash_set mapfile_fd "${_hkey}" "8"
+			hash_set mapfile_fd "${_hkey}" "7"
 			;;
 		*)
 			case "${_modes}" in
@@ -1355,8 +1495,8 @@ mapfile_close() {
 	# Only close fd that we opened.
 	if hash_remove mapfile_fd "${handle}" fd; then
 		case "${fd}" in
-		8)
-			exec 8>&-
+		7)
+			exec 7>&-
 			case "${handle}" in
 			"${_MAPFILE_HANDLE-}")
 				unset _MAPFILE_HANDLE
@@ -1413,28 +1553,51 @@ mapfile_read_loop() {
 
 # Pipe to STDOUT from handle.
 mapfile_cat() {
-	[ $# -ge 1 ] || eargs mapfile_cat handle...
+	[ $# -ge 1 ] || eargs mapfile_cat '[-T fd]' handle...
+	local OPTIND=1 Tflag flag ret
+
+	Tflag=
+	while getopts "T:" flag; do
+		case "${flag}" in
+		T) Tflag="${OPTARG:?}" ;;
+		*) err 1 "mapfile_cat: Invalid flag ${flag}" ;;
+		esac
+	done
+	shift $((OPTIND-1))
+	[ $# -ge 1 ] || eargs mapfile_cat '[-T fd]' handle...
 	local IFS handle line
 
+	ret=0
 	for handle in "$@"; do
 		while IFS= mapfile_read "${handle}" line; do
-			echo "${line}"
+			# shellcheck disable=SC2320
+			echo "${line}" || ret=$?
+			case "${Tflag}" in
+			"") ;;
+			*)
+				# shellcheck disable=SC2320
+				echo "${line}" > "/dev/fd/${Tflag}" || ret=$?
+			;;
+			esac
 		done
 	done
+	return "${ret}"
 }
 
 # Pipe to STDOUT from a file.
 # Basically an optimized loop of mapfile_read_loop_redir, or read_file
 mapfile_cat_file() {
 	local -; set +x
-	[ $# -ge 0 ] || eargs mapfile_cat_file '[-q]' file...
+	[ $# -ge 0 ] || eargs mapfile_cat_file '[-q] [-T fd]' file...
 	local  _handle ret _file
-	local OPTIND=1 qflag flag
+	local OPTIND=1 Tflag qflag flag
 
 	qflag=
-	while getopts "q" flag; do
+	Tflag=
+	while getopts "qT:" flag; do
 		case "${flag}" in
 		q) qflag=1 ;;
+		T) Tflag="${OPTARG:?}" ;;
 		*) err 1 "mapfile_cat_file: Invalid flag ${flag}" ;;
 		esac
 	done
@@ -1451,7 +1614,8 @@ mapfile_cat_file() {
 		esac
 		# shellcheck disable=SC2034
 		if mapfile ${qflag:+-q} -F _handle "${_file}" "r"; then
-			mapfile_cat "${_handle}" || ret="$?"
+			mapfile_cat ${Tflag:+-T "${Tflag}"} "${_handle}" ||
+			    ret="$?"
 			mapfile_close "${_handle}" || ret="$?"
 		else
 			ret="$?"
@@ -1731,7 +1895,7 @@ prefix_stderr_quick() {
 prefix_stderr() {
 	local extra="$1"
 	shift 1
-	local prefixpipe prefix_job ret
+	local prefixpipe prefixpid ret
 	local prefix MSG_NESTED_STDERR
 	local - errexit
 
@@ -1758,7 +1922,7 @@ prefix_stderr() {
 		fi
 	) < "${prefixpipe}" &
 	set +m
-	get_job_id "$!" prefix_job
+	prefixpid="$!"
 	exec 4>&2
 	exec 2> "${prefixpipe}"
 	unlink "${prefixpipe}"
@@ -1774,7 +1938,17 @@ prefix_stderr() {
 	fi
 
 	exec 2>&4 4>&-
-	timed_wait_and_kill_job 5 "%${prefix_job}" || :
+	case "${INJOB-}" in
+	1)
+		timed_wait_and_kill 5 "${prefixpid}" || :
+		;;
+	*)
+		local prefix_job
+
+		get_job_id "${prefixpid}" prefix_job
+		timed_wait_and_kill_job 5 "%${prefix_job}" || :
+		;;
+	esac
 
 	return ${ret}
 }
@@ -1782,7 +1956,7 @@ prefix_stderr() {
 prefix_stdout() {
 	local extra="$1"
 	shift 1
-	local prefixpipe prefix_job ret
+	local prefixpipe prefixpid ret
 	local prefix MSG_NESTED
 	local - errexit
 
@@ -1807,7 +1981,7 @@ prefix_stdout() {
 		fi
 	) < "${prefixpipe}" &
 	set +m
-	get_job_id "$!" prefix_job
+	prefixpid="$!"
 	exec 3>&1
 	exec > "${prefixpipe}"
 	unlink "${prefixpipe}"
@@ -1823,7 +1997,17 @@ prefix_stdout() {
 	fi
 
 	exec 1>&3 3>&-
-	timed_wait_and_kill_job 5 "%${prefix_job}" || :
+	case "${INJOB-}" in
+	1)
+		timed_wait_and_kill 5 "${prefixpid}" || :
+		;;
+	*)
+		local prefix_job
+
+		get_job_id "${prefixpid}" prefix_job
+		timed_wait_and_kill_job 5 "%${prefix_job}" || :
+		;;
+	esac
 
 	return ${ret}
 }
@@ -1831,7 +2015,7 @@ prefix_stdout() {
 prefix_output() {
 	local extra="$1"
 	local prefix_stdout prefix_stderr prefixpipe_stdout prefixpipe_stderr
-	local ret MSG_NESTED MSG_NESTED_STDERR prefix_job
+	local ret MSG_NESTED MSG_NESTED_STDERR prefix_job prefixpid
 	local - errexit
 	shift 1
 
@@ -1857,6 +2041,7 @@ prefix_output() {
 	    -1 "${prefix_stdout}" -o "${prefixpipe_stdout}" \
 	    -2 "${prefix_stderr}" -e "${prefixpipe_stderr}" \
 	    -P "poudriere: ${PROC_TITLE} (prefix_output)"
+	prefixpid="$!"
 	prefix_job="${spawn_jobid}"
 	exec 3>&1
 	exec > "${prefixpipe_stdout}"
@@ -1878,7 +2063,14 @@ prefix_output() {
 	fi
 
 	exec 1>&3 3>&- 2>&4 4>&-
-	timed_wait_and_kill_job 5 "%${prefix_job}" || :
+	case "${INJOB-}" in
+	1)
+		timed_wait_and_kill 5 "${prefixpid}" || :
+		;;
+	*)
+		timed_wait_and_kill_job 5 "%${prefix_job}" || :
+		;;
+	esac
 
 	return ${ret}
 }
@@ -1966,56 +2158,119 @@ calculate_duration() {
 
 _write_atomic() {
 	local -; set +x
-	[ $# -eq 3 ] || eargs _write_atomic cmp tee destfile "< content"
+	[ $# -eq 3 ] || [ $# -eq 4 ] ||
+	    eargs _write_atomic cmp tee destfile '< data | data'
 	local cmp="$1"
 	local tee="$2"
 	local dest="$3"
-	local tmpfile_handle tmpfile ret
+	local data
+	local tmpfile_handle tmpfile ret tmpdir Tflag
 
+	shift 3
+	unset data
+	case "$#" in
+	1) data=1 ;;
+	esac
+	case "$-${tee-}" in
+	C1)
+		err "${EX_USAGE:-64}" "_write_atomic: Teeing with noclobber" \
+			              "cannot work"
+		;;
+	esac
+	case "${dest}" in
+	*/*) tmpdir="${dest%/*}" ;;
+	*)   tmpdir="." ;;
+	esac
 	mapfile_mktemp tmpfile_handle tmpfile \
-	    -p "${dest%/*}" -ut ".write_atomic-${dest##*/}" ||
-	    err "$?" "write_atomic unable to create tmpfile in ${dest%/*}"
+	    -p "${tmpdir}" -ut ".write_atomic-${dest##*/}" ||
+	    err "$?" "write_atomic unable to create tmpfile in ${tmpdir}"
 	ret=0
-	if [ "${tee}" -eq 1 ]; then
-		mapfile_write "${tmpfile_handle}" -T || ret="$?"
-	else
-		mapfile_write "${tmpfile_handle}" || ret="$?"
-	fi
-	if [ "${ret}" -ne 0 ]; then
+	case "${tee}" in
+	1) Tflag=1 ;;
+	*) Tflag= ;;
+	esac
+	mapfile_write "${tmpfile_handle}" ${Tflag:+-T} -- ${data+"$@"} ||
+	    ret="$?"
+	case "${ret}" in
+	0) ;;
+	*)
+		msg_error "write_atomic: mapfile_write file=${tmpfile} dest=${dest} ret=${ret}"
 		unlink "${tmpfile}" || :
 		return "${ret}"
-	fi
+		;;
+	esac
 	ret=0
 	mapfile_close "${tmpfile_handle}" || ret="$?"
-	if [ "${ret}" -ne 0 ]; then
+	case "${ret}" in
+	0) ;;
+	*)
+		msg_dev "write_atomic: mapfile_close file=${tmpfile} dest=${dest} ret=${ret}"
 		unlink "${tmpfile}" || :
 		return "${ret}"
-	fi
-	if [ "${cmp}" -eq 1 ] && cmp -s "${dest}" "${tmpfile}"; then
-		unlink "${tmpfile}" || :
-		return 0
-	fi
+		;;
+	esac
 	ret=0
-	rename "${tmpfile}" "${dest}" || ret="$?"
-	if [ "${ret}" -ne 0 ]; then
+	case "$-" in
+	*C*) # noclobber
+		# If comparing, we can only succeed if there is no file
+		# so no need to compare.
+		ln "${tmpfile}" "${dest}" 2>/dev/null || ret="$?"
+		case "${ret}" in
+		0) ;;
+		*)
+			msg_dev "write_atomic: ln file=${tmpfile} dest=${dest} ret=${ret}"
+			;;
+		esac
 		unlink "${tmpfile}" || :
 		return "${ret}"
-	fi
+		;;
+	esac
+	case "${cmp}" in
+	1)
+		if cmp -s "${dest}" "${tmpfile}"; then
+			unlink "${tmpfile}" || :
+			return 0
+		fi
+		;;
+	esac
+	rename "${tmpfile}" "${dest}" || ret="$?"
+	case "${ret}" in
+	0) ;;
+	*)
+		msg_dev "write_atomic: rename file=${tmpfile} dest=${dest} ret=${ret}"
+		unlink "${tmpfile}" || :
+		;;
+	esac
+	return "${ret}"
 }
 
-
+# -T is for teeing
 write_atomic_cmp() {
 	local -; set +x
-	[ $# -eq 1 ] || eargs write_atomic_cmp destfile "< content"
-	local dest="$1"
+	[ $# -ge 1 ] || eargs write_atomic_cmp '[-T]' destfile '< data | data'
+	local flag Tflag
+	local OPTIND=1
 
-	_write_atomic 1 0 "${dest}" || return
+	Tflag=0
+	while getopts "T" flag; do
+		case "${flag}" in
+		T)
+			Tflag=1
+			;;
+		*) err "${EX_USAGE}" "write_atomic_cmp: Invalid flag ${flag}" ;;
+		esac
+	done
+	shift $((OPTIND-1))
+	[ $# -eq 1 ] || [ $# -eq 2 ] ||
+	    eargs write_atomic_cmp '[-T]' destfile '< data | data'
+
+	_write_atomic 1 "${Tflag}" "$@" || return
 }
 
 # -T is for teeing
 write_atomic() {
 	local -; set +x
-	[ $# -ge 1 ] || eargs write_atomic '[-T]' destfile "< content"
+	[ $# -ge 1 ] || eargs write_atomic '[-T]' destfile '< data | data'
 	local flag Tflag
 	local OPTIND=1
 
@@ -2029,10 +2284,10 @@ write_atomic() {
 		esac
 	done
 	shift $((OPTIND-1))
-	[ $# -eq 1 ] || eargs write_atomic '[-T]' destfile "< content"
-	local dest="$1"
+	[ $# -eq 1 ] || [ $# -eq 2 ] ||
+	    eargs write_atomic '[-T]' destfile '< data | data'
 
-	_write_atomic 0 "${Tflag}" "${dest}" || return
+	_write_atomic 0 "${Tflag}" "$@" || return
 }
 
 # Place environment requirements on entering a function
@@ -2237,7 +2492,9 @@ count_lines() {
 	esac
 	case "${cl_ret}" in
 	0)
-		cl_count="$(wc -l "${cl_file}")"
+		# Avoid blank value on signal (see critical_inherit).
+		until cl_count=0; [ ! -r "${cl_file}" ] ||
+		    cl_count="$(wc -l "${cl_file}")"; do :; done
 		cl_count="${cl_count% *}"
 		cl_count="${cl_count##* }"
 		;;
@@ -2261,91 +2518,268 @@ sleep() {
 ;;
 esac
 
-# Reads pipe data into local vars from a command, while ensuring error is
-# captured. See port_var_fetch() for example.
-# An alternative is pipe_func() which uses a fifo.
-# ```
-# while herepipe ret line; do
-#	...
-# done <<-EOF
-# $(herepipe_trap; cmd...)
-# EOF
-# if [ "$ret" -ne 0 ]; then
-#	err 1 "cmd failed with return $ret"
-# fi
-herepipe_read() {
-	[ "$#" -ge 2 ] || eargs herepipe_read err_var 'read params...'
-	local herepipe_key="$*"
-	local herepipe_err_var="$1"
-	shift
-	local herepipe_ret herepipe_exit_status
+_lock_read_pid() {
+	[ $# -eq 2 ] || eargs _lock_read_pid pidfile pid_var_return
+	local _lrp_pidfile="$1"
+	local _lrp_var_return="$2"
+	local _lrp_pid
 
-	herepipe_ret=0
-	# A hash state is needed to assert !RET! was handled before EOF.
-	# We could store it into the err_var, but that requires the caller
-	# unsets before using herepipe_read() which is easy to forget.
-
-	# Read the values into the caller's vars.
-	mapfile_read_loop /dev/stdin "$@" || herepipe_ret="$?"
-	case "${herepipe_ret}" in
-	0)
-		# It may seem we could return 0 until EOF but we need to
-		# inspect every line to look for !RET! before it is eaten
-		# by the caller.
-		:
-		;;
-	*)
-		# EOF/error, we better have seen our !RET exit code already.
-		if ! hash_remove herepipe_exit_status "${herepipe_key}" \
-		    herepipe_exit_status; then
-			err "${EX_SOFTWARE}" "herepipe_read: EOF without _herepipe_exit called, ret=${herepipe_exit_status}"
-		fi
-		# The return status is probably eaten by a while loop.
-		return "${herepipe_ret}"
-		;;
-	esac
-	# Successful read. Look for !RET in the caller's vars.
-	local herepipe_var_1
-
-	getvar "${1:?}" herepipe_var_1
-	case "${herepipe_var_1}" in
-	"!RET!")
-		getvar "${2:?}" herepipe_exit_status
-		herepipe_ret=1 # EOF
-		;;
-	"!RET! "*)
-		herepipe_exit_status="${herepipe_var_1#!RET! }"
-		herepipe_ret=1 # EOF
-		;;
-	*)
-		# user data, nothing to do.
-		:
-		;;
-	esac
-	case "${herepipe_ret}" in
-	1)
-		# EOF
-		# Call it_read once more to let it cleanup and do real EOF
-		if mapfile_read_loop /dev/stdin "$@"; then
-			err "${EX_SOFTWARE}" "herepipe_read: EOF call to file_read_it succeeded?"
-		fi
-		hash_set herepipe_exit_status "${herepipe_key}" \
-		    "${herepipe_exit_status}"
-		setvar "${herepipe_err_var}" "${herepipe_exit_status:?}" ||
-		    herepipe_ret="$?"
-		;;
-	esac
-	return "${herepipe_ret}"
+	# The pidfile has no newline, so read until we have a value
+	# regardless of the read error. The rereads are to avoid
+	# racing with signals.
+	_lrp_pid=
+	until [ "${_lrp_pid:+set}" == "set" ]; do
+		read -r _lrp_pid < "${_lrp_pidfile:?}" || :
+	done
+	setvar "${_lrp_var_return:?}" "${_lrp_pid:?}" || return
 }
 
-_herepipe_exit() {
-	local ret="${1-$?}"
-	echo "!RET! ${ret}"
-	# This is lost in the pipe
-	exit "${ret}"
+_lock_acquire() {
+	local -; set +x
+	[ $# -eq 3 ] || [ $# -eq 4 ] ||
+	    eargs _lock_acquire quiet lockpath lockname '[waittime]'
+	local have_lock mypid lock_pid real_lock_pid
+	local quiet="$1"
+	local lockname="$2"
+	local lockpath="$3"
+	local waittime="${4:-30}"
+
+	# Avoid blank value on signal (see critical_inherit).
+	until mypid="$(getpid)"; do :; done
+	hash_get have_lock "${lockname}" have_lock || have_lock=0
+	# lock_pid is in case a subshell tries to reacquire/relase my lock
+	hash_get lock_pid "${lockname}" lock_pid || lock_pid=
+	# If the pid is set and does not match I'm a subshell and should wait
+	case "${lock_pid}" in
+	"${mypid}"|"") ;;
+	*)
+		hash_unset have_lock "${lockname}"
+		hash_unset lock_pid "${lockname}"
+		lock_pid=
+		have_lock=0
+		;;
+	esac
+	if [ "${have_lock}" -eq 0 ] &&
+		! locked_mkdir "${waittime}" "${lockpath}" "${mypid}"; then
+		if [ "${quiet}" -eq 0 ]; then
+			msg_warn "Failed to acquire ${lockname} lock"
+		fi
+		return 1
+	fi
+	# XXX: Remove this block with locked_mkdir [EINTR] fixes.
+	{
+		# locked_mkdir is quite racy. We may have gotten a false-success
+		# and need to consider it a failure.
+		if [ ! -d "${lockpath}" ]; then
+			if [ "${quiet}" -eq 0 ]; then
+				msg_warn "Lost race grabbing ${lockname} lock: no dir"
+			fi
+			return 1
+		fi
+		_lock_read_pid "${lockpath:?}.pid" real_lock_pid
+		case "${real_lock_pid}" in
+		"${mypid}") ;;
+		*)
+			if [ "${quiet}" -eq 0 ]; then
+				msg_warn "Lost race grabbing ${lockname} lock: wrong pid: mypid=${mypid} lock_pid=${real_lock_pid}"
+			fi
+			return 1
+			;;
+		esac
+	}
+	hash_set have_lock "${lockname}" $((have_lock + 1))
+	case "${lock_pid}" in
+	"")
+		hash_set lock_pid "${lockname}" "${mypid}"
+		;;
+	esac
 }
 
-herepipe_trap() {
-	trap _herepipe_exit EXIT
-	trap exit TERM HUP INT
+# Acquire local build lock
+lock_acquire() {
+	local -; set +x
+	[ $# -eq 1 ] || [ $# -eq 2 ] || [ $# -eq 3 ] ||
+	    eargs lock_acquire '[-q]' lockname '[waittime]'
+	local lockname waittime lockpath
+
+	case "$1" in
+	"-q")
+		quiet=1
+		shift
+		;;
+	*)
+		quiet=0
+		;;
+	esac
+	lockname="$1"
+	waittime="$2"
+
+	lockpath="${POUDRIERE_TMPDIR:?}/lock-${MASTERNAME}-${lockname:?}"
+	_lock_acquire "${quiet}" "${lockname}" "${lockpath}" "${waittime}"
+}
+
+# while locked tmp NAME timeout; do <locked code>; done
+locked() {
+	local -; set +x
+	[ "$#" -eq 2 ] || [ "$#" -eq 3 ] || eargs locked tmp_var lockname \
+	    '[waittime]'
+	local l_tmp_var="$1"
+	local lockname="$2"
+	local waittime="${3-}"
+
+	if isset "${l_tmp_var}"; then
+		lock_release "${lockname}"
+		unset "${l_tmp_var}"
+		return 1
+	fi
+	setvar "${l_tmp_var}" "1"
+	until lock_acquire "${lockname}" "${waittime}"; do
+		sleep 1
+	done
+}
+
+# Acquire system wide lock
+slock_acquire() {
+	local -; set +x
+	[ $# -eq 1 ] || [ $# -eq 2 ] || [ $# -eq 3 ] ||
+	    eargs slock_acquire '[-q]' lockname '[waittime]'
+	local lockname waittime lockpath quiet
+
+	case "$1" in
+	"-q")
+		quiet=1
+		shift
+		;;
+	*)
+		quiet=0
+		;;
+	esac
+	lockname="$1"
+	waittime="$2"
+
+	mkdir -p "${SHARED_LOCK_DIR:?}" 2>/dev/null || :
+	lockpath="${SHARED_LOCK_DIR:?}/lock-poudriere-shared-${lockname:?}"
+	_lock_acquire "${quiet}" "${lockname}" "${lockpath}" "${waittime}" ||
+	    return
+	# This assumes SHARED_LOCK_DIR isn't overridden by caller
+	SLOCKS="${SLOCKS:+${SLOCKS} }${lockname}"
+}
+
+# while slocked tmp NAME timeout; do <locked code>; done
+slocked() {
+	local -; set +x
+	[ "$#" -eq 2 ] || [ "$#" -eq 3 ] || eargs slocked tmp_var lockname \
+	    '[waittime]'
+	local s_tmp_var="$1"
+	local lockname="$2"
+	local waittime="${3-}"
+
+	if isset "${s_tmp_var}"; then
+		slock_release "${lockname}"
+		unset "${s_tmp_var}"
+		return 1
+	fi
+	setvar "${s_tmp_var}" "1"
+	until slock_acquire "${lockname}" "${waittime}"; do
+		sleep 1
+	done
+}
+
+_lock_release() {
+	local -; set +x
+	[ $# -eq 2 ] || eargs _lock_release lockname lockpath
+	local lockname="$1"
+	local lockpath="$2"
+	local have_lock lock_pid mypid pid
+
+	hash_get have_lock "${lockname}" have_lock ||
+		err 1 "Releasing unheld lock ${lockname}"
+	if [ "${have_lock}" -eq 0 ]; then
+		err 1 "Release unheld lock (have_lock=0) ${lockname}"
+	fi
+	hash_get lock_pid "${lockname}" lock_pid ||
+		err 1 "Lock had no pid ${lockname}"
+	# Avoid blank value on signal (see critical_inherit).
+	until mypid="$(getpid)"; do :; done
+	case "${mypid}" in
+	"${lock_pid}") ;;
+	*)
+		err 1 "Releasing lock pid ${lock_pid} owns ${lockname}"
+		;;
+	esac
+	if [ "${have_lock}" -gt 1 ]; then
+		hash_set have_lock "${lockname}" $((have_lock - 1))
+	else
+		hash_unset have_lock "${lockname}"
+		[ -f "${lockpath:?}.pid" ] ||
+			err 1 "No pidfile found for ${lockpath}"
+		_lock_read_pid "${lockpath:?}.pid" pid
+		case "${pid}" in
+		"")
+			err 1 "Pidfile is empty for ${lockpath}"
+			;;
+		esac
+		case "${pid}" in
+		"${mypid}") ;;
+		*)
+			err 1 "Releasing lock pid ${lock_pid} owns ${lockname}"
+			;;
+		esac
+		rmdir "${lockpath:?}" ||
+			err 1 "Held lock dir not found: ${lockpath}"
+	fi
+}
+
+# Release local build lock
+lock_release() {
+	local -; set +x
+	[ $# -eq 1 ] || eargs lock_release lockname
+	local lockname="$1"
+	local lockpath
+
+	lockpath="${POUDRIERE_TMPDIR:?}/lock-${MASTERNAME}-${lockname:?}"
+	_lock_release "${lockname}" "${lockpath}"
+}
+
+# Release system wide lock
+slock_release() {
+	local -; set +x
+	[ $# -eq 1 ] || eargs slock_release lockname
+	local lockname="$1"
+	local lockpath
+
+	lockpath="${SHARED_LOCK_DIR:?}/lock-poudriere-shared-${lockname:?}"
+	_lock_release "${lockname}" "${lockpath}" || return
+	list_remove SLOCKS "${lockname}"
+}
+
+slock_release_all() {
+	local -; set +x
+	[ $# -eq 0 ] || eargs slock_release_all
+	local lockname
+
+	case "${SLOCKS-}" in
+	"") return 0 ;;
+	esac
+	for lockname in ${SLOCKS:?}; do
+		slock_release "${lockname}"
+	done
+}
+
+lock_have() {
+	local -; set +x
+	[ $# -eq 1 ] || eargs lock_have lockname
+	local lockname="$1"
+	local mypid lock_pid
+
+	if hash_isset have_lock "${lockname}"; then
+		hash_get lock_pid "${lockname}" lock_pid ||
+			err 1 "have_lock: Lock had no pid ${lockname}"
+		# Avoid blank value on signal (see critical_inherit).
+		until mypid="$(getpid)"; do :; done
+		case "${lock_pid}" in
+		"${mypid}") return 0 ;;
+		esac
+	fi
+	return 1
 }

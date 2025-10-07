@@ -117,6 +117,10 @@ elif [ -n "${MAX_COUNT}" ] && [ $# -ne 0 -o "${ALL}" -eq 1 ]; then
 	# -a mutually exclusive with -N and <days>
 elif [ "${ALL}" -eq 1 ] && [ -n "${MAX_COUNT}" -o $# -ne 0 ]; then
 	usage
+	# Too many arguments
+elif [ "${ALL}" -eq 0 ] && [ -z "${MAX_COUNT}" ] && [ "$#" -ne 1 ]; then
+	# $1 = DAYS
+	usage
 fi
 : ${DAYS:=$1}
 unset ALL
@@ -194,7 +198,7 @@ elif [ ${DAYS} -eq 0 ]; then
 else
 	reason="builds older than ${DAYS} days in ${log_top} (filtered)"
 fi
-msg_n "Grabging logclean lock..."
+msg_n "Acquiring logclean lock..."
 if slock_acquire -q "logclean_all" "${LOGCLEAN_LOCK_WAIT}"; then
 	echo " done"
 else

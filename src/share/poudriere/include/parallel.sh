@@ -26,6 +26,7 @@
 # shellcheck shell=ksh
 
 _wait() {
+	[ "$#" -ge 0 ] || eargs _wait '[%job|pid...]'
 	local wret ret pid
 
 	if [ "$#" -eq 0 ]; then
@@ -48,6 +49,35 @@ _wait() {
 		done
 	done
 
+	return "${ret}"
+}
+
+timed_wait_and_kill() {
+	[ $# -eq 2 ] || eargs timed_wait_and_kill time pids
+	local time="$1"
+	local pids="$2"
+	local status ret
+	local -
+
+	ret=0
+	# Give children $time seconds to exit and then force kill
+	set -o noglob
+	# shellcheck disable=SC2086
+	pwait -t "${time}" ${pids} || ret="$?"
+	set +o noglob
+	case "${ret}" in
+	124)
+		# Something still running, be more dramatic.
+		kill_and_wait 1 "${pids}" || ret=$?
+		;;
+	*)
+		# Nothing running, collect their status.
+		set -o noglob
+		# shellcheck disable=SC2086
+		_wait ${pids} 2>/dev/null || ret=$?
+		set +o noglob
+		;;
+	esac
 	return "${ret}"
 }
 
@@ -98,8 +128,50 @@ pwait() {
 	err "${EX_SOFTWARE}" "pwait: timeout=${timeout} pids=${pids}"
 }
 
+kill_and_wait() {
+	[ $# -eq 2 ] || eargs kill_and_wait time pids
+	local time="$1"
+	local pids="$2"
+	local ret=0
+	local -
+
+	case "${pids}" in
+	"") return 0 ;;
+	esac
+
+	{
+		set -o noglob
+		# shellcheck disable=SC2086
+		kill -STOP ${pids} || :
+		# shellcheck disable=SC2086
+		kill ${pids} || :
+		# shellcheck disable=SC2086
+		kill -CONT ${pids} || :
+
+		# Wait for the pids. Non-zero status means something is still running.
+		# shellcheck disable=SC2086
+		pwait -t "${time}" ${pids} || ret="$?"
+		case "${ret}" in
+		124)
+			# Kill remaining children instead of waiting on them
+			# shellcheck disable=SC2086
+			kill -9 ${pids} || :
+			# shellcheck disable=SC2086
+			_wait ${pids} || ret=$?
+			;;
+		*)
+			# Nothing running, collect status directly.
+			# shellcheck disable=SC2086
+			_wait ${pids} || ret=$?
+			;;
+		esac
+		set +o noglob
+	}
+	return "${ret}"
+}
+
 timed_wait_and_kill_job() {
-	[ "$#" -eq 2 ] || eargs timed_wait_and_kill_job time jobid
+	[ "$#" -eq 2 ] || eargs timed_wait_and_kill_job time '%job'
 	local timeout="$1"
 	local jobid="$2"
 
@@ -119,9 +191,16 @@ timed_wait_and_kill_job() {
 }
 
 kill_job() {
-	[ "$#" -eq 2 ] || eargs kill_job timeout jobid
+	[ "$#" -eq 2 ] || eargs kill_job timeout '%job|pid'
 	local timeout="$1"
 	local jobid="$2"
+
+	case "${INJOB-}" in
+	"") ;;
+	1)
+		err "${EX_SOFTWARE-70}" "kill_job: Trying to kill a job from within a job."
+		;;
+	esac
 
 	# kill -TERM
 	# Wait $timeout
@@ -132,16 +211,21 @@ kill_job() {
 
 # _kill_job funcname jobid :${wait-timeout} SIG :${wait-timeout} SIG
 _kill_job() {
-	[ "$#" -ge 3 ] || eargs _kill_job funcname jobid 'killspec'
+	[ "$#" -ge 3 ] || eargs _kill_job funcname '%job|pid' 'killspec'
 	local funcname="$1"
 	local jobid="$2"
 	local timeout ret pgid status action
 
 	shift 2
 	if ! jobid "${jobid}" >/dev/null; then
-		if jobid "%${jobid}" >/dev/null; then
-			err "${EX_SOFTWARE}" "${funcname}: trying to kill unknown job ${jobid}: Did you mean %${jobid}?"
-		fi
+		case "${jobid}" in
+		"%"*) ;;
+		*)
+			if jobid "%${jobid}" >/dev/null; then
+				err "${EX_SOFTWARE}" "${funcname}: trying to kill unknown job ${jobid}: Did you mean %${jobid}?"
+			fi
+			;;
+		esac
 		err "${EX_SOFTWARE}" "${funcname}: trying to kill unknown job ${jobid}"
 	fi
 	ret=0
@@ -198,11 +282,8 @@ _kill_job() {
 			;;
 		esac
 	done
-	msg_dev "Collecting ${status} job=${jobid} pgid=${pgid}"
+	msg_dev "Collecting status='${status}' job=${jobid} pgid=${pgid}"
 	_wait "${jobid}" || ret="$?"
-	case "${ret}" in
-	143) ret=0 ;;
-	esac
 	msg_dev "Job ${jobid} pgid=${pgid} exited ${ret}"
 	return "${ret}"
 }
@@ -276,7 +357,7 @@ kill_jobs() {
 	[ "$#" -ge 1 ] || eargs kill_jobs '[timeout]' '%job...'
 	local timeout="${1:-5}"
 	shift
-	local ret jobno
+	local ret kret jobno
 
 	case "$#" in
 	0) return 0 ;;
@@ -287,7 +368,19 @@ kill_jobs() {
 		"%"*) ;;
 		*) err "${EX_SOFTWARE}" "kill_jobs: invalid job spec: ${jobno}" ;;
 		esac
-		kill_job "${timeout}" "${jobno}" || ret="$?"
+		kret=0
+		kill_job "${timeout}" "${jobno}" || kret="$?"
+		# Don't truncate a non-TERM ret with a TERM ret.
+		case "${kret}" in
+		143)
+			case "${ret}" in
+			0) ret="${kret}" ;;
+			esac
+			;;
+		*)
+			ret="${kret}"
+			;;
+		esac
 	done
 	return "${ret}"
 }
@@ -328,9 +421,6 @@ kill_all_jobs() {
 	# shellcheck disable=SC2086
 	kill_jobs "${timeout}" ${alljobs} || ret="$?"
 	set +o noglob
-	case "${ret}" in
-	143) ret=0 ;;
-	esac
 	return "${ret}"
 }
 
@@ -355,7 +445,7 @@ _parallel_exec() {
 		"$@"
 	)
 	ret=$?
-	echo . >&9 || :
+	echo . >&8 || :
 	exit ${ret}
 	# set -e will be restored by 'local -'
 }
@@ -371,7 +461,7 @@ parallel_start() {
 	esac
 	fifo="$(mktemp -ut parallel.pipe)"
 	mkfifo "${fifo}"
-	exec 9<> "${fifo}"
+	exec 8<> "${fifo}"
 	unlink "${fifo}" || :
 	NBPARALLEL=0
 	PARALLEL_JOBNOS=""
@@ -423,7 +513,7 @@ parallel_stop() {
 		set +o noglob
 	fi
 
-	exec 9>&-
+	exec 8>&-
 	unset PARALLEL_JOBNOS
 	unset NBPARALLEL
 
@@ -483,7 +573,7 @@ parallel_run() {
 	"${PARALLEL_JOBS}")
 		local a
 
-		if read_blocking a <&9; then
+		if read_blocking a <&8; then
 			case "${a}" in
 			".") ;;
 			*) err 1 "parallel_run: Invalid token: ${a}" ;;
@@ -659,7 +749,7 @@ jobs_with_statuses() {
 }
 
 get_job_status() {
-	[ "$#" -eq 2 ] || eargs get_job_status pid var_return
+	[ "$#" -eq 2 ] || eargs get_job_status '%job|pid' var_return
 	local gjs_pid="$1"
 	local gjs_var_return="$2"
 	local gjs_output ret
@@ -670,6 +760,7 @@ get_job_status() {
 	# But without an external fork+exec, or jobs(1) call, the job status
 	# does not update.
 	jobs >/dev/null || :
+	ret=0
 	gjs_output="$(jobs -l "${gjs_pid}")" || ret="$?"
 	case "${gjs_pid}" in
 	"%"*)
@@ -706,7 +797,11 @@ get_job_status() {
 	# shellcheck disable=SC2086
 	set -- ${gjs_output}
 	set +o noglob
+	local gjs_n
+	gjs_n=0
+	# shellcheck disable=SC2167
 	for gjs_arg in "$@"; do
+		gjs_n="$((gjs_n + 1))"
 		case "${gjs_arg}" in
 		"["*"]") continue ;;
 		"+"|"-") continue ;;
@@ -718,7 +813,22 @@ get_job_status() {
 		[0-9][0-9][0-9][0-9][0-9][0-9][0-9]|\
 		[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]) continue ;;
 		*)
-			setvar "${gjs_var_return}" "${gjs_arg}" || return
+			local gjs_reason
+
+			unset gjs_reason
+			shift "$((gjs_n - 1))"
+			# shellcheck disable=SC2165
+			for gjs_arg in "$@"; do
+				case "${gjs_arg}" in
+				[0-9]*)
+					break
+					;;
+				*)
+					gjs_reason="${gjs_reason:+${gjs_reason} }${gjs_arg}"
+					;;
+				esac
+			done
+			setvar "${gjs_var_return}" "${gjs_reason}" || return
 			return 0
 		esac
 	done
@@ -733,6 +843,7 @@ get_job_id() {
 	local gji_var_return="$2"
 	local gji_jobid gji_output ret
 
+	ret=0
 	gji_output="$(jobs -l "${gji_pid}")" || ret="$?"
 	case "${gji_output}" in
 	# First cases cover piped jobs.
@@ -754,9 +865,10 @@ get_job_id() {
 }
 
 spawn_job() {
-	local -
+	local - INJOB
 
 	set -m
+	INJOB=1
 	spawn_jobid=
 	spawn "$@" || return
 	get_job_id "$!" spawn_jobid
@@ -843,64 +955,123 @@ raise() {
 	kill -"${sig}" "$(getpid)"
 }
 
+# Need to cleanup some stuff before calling traps.
+_trap_pre_handler() {
+	_ERET="$?"
+	unset IFS
+	set +u
+	case "$-" in
+	*e*) ;;
+	*)
+		# shellcheck disable=SC2034
+		ERROR_VERBOSE=0
+		;;
+	esac
+	set +e
+	trap '' PIPE INT INFO HUP TERM
+	SUPPRESS_INT=1
+	redirect_to_real_tty exec
+	case "$-" in
+	*x*) _trap_x=x ;;
+	esac
+	set +x
+}
+# {} is used to avoid set -x EPIPE
+alias trap_pre_handler='{ _trap_pre_handler; } 2>/dev/null; (exit "${_ERET}")'
+
 sig_handler() {
-	# Avoid set -x output until we ensure proper stderr.
-	{
-		unset IFS
-		set +e +u
-		trap '' PIPE INT INFO HUP TERM
-		case "${SHFLAGS-$-}${SETX_EXIT:-0}" in
-		*x*1) ;;
-		*) local -; set +x ;;
-		esac
-		redirect_to_real_tty exec
-	} 2>/dev/null
+	local -
+
+	case "${SHFLAGS-$-}${_trap_x-}${SETX_EXIT:-0}" in
+	*x*1) set -x ;;
+	*) set +x ;;
+	esac
+
+	[ $# -eq 1 ] || eargs sig_handler sig
 
 	local sig="$1"
-	local exit_handler="$2"
+	local exit_handler
 
 	trap - EXIT
+	# shellcheck disable=SC2034
+	EXIT_BSTATUS="SIG${sig:?}:"
 	case "${USE_DEBUG:-no}.$$" in
 	yes.*|"no.$(getpid)")
 		msg "[$(getpid)${PROC_TITLE:+:${PROC_TITLE}}] Signal ${sig} caught" >&2
 		;;
 	esac
+	# Let the handler know what status is being exited with even though
+	# we will later reraise it.
+	# Would be nice if we could (raise "${sig}") here but it does not
+	# set $? while inside of a trap.
+	local sig_ret
+
+	case "${sig}" in
+	TERM) sig_ret=$((128 + 15)) ;;
+	INT)  sig_ret=$((128 + 2)) ;;
+	HUP)  sig_ret=$((128 + 1)) ;;
+	PIPE) sig_ret=$((128 + 13)) ;;
+	*)    sig_ret= ;;
+	esac
 	# return ignored since we will exit on signal
-	"${exit_handler}" || :
+	local TRAPSVAR
+	# shellcheck disable=SC2034
+	local tmp
+
+	TRAPSVAR="TRAPS$(getpid)"
+	unset tmp
+	while stack_foreach "${TRAPSVAR}" exit_handler tmp; do
+		case "${sig_ret:+set}" in
+		set) (exit "${sig_ret}") ;;
+		esac
+		"${exit_handler}" || :
+	done
 	trap - "${sig}"
 	raise "${sig}"
 }
 
 # Take "return" value from real exit handler and exit with it.
 exit_return() {
-	# Avoid set -x output until we ensure proper stderr.
-	{
-		local ret="$?"
-		unset IFS
-		set +e +u
-		trap '' PIPE INT INFO HUP TERM
-		case "${SHFLAGS-$-}${SETX_EXIT:-0}" in
-		*x*1) ;;
-		*) local -; set +x ;;
-		esac
-		redirect_to_real_tty exec
-	} 2>/dev/null
+	local ret="$?"
+	local -
 
-	# Ensure the real handler sees the real status
-	(exit "${ret}")
-	"$@" || ret="$?"
+	# shellcheck disable=SC2034
+	IN_EXIT_HANDLER=1
+
+	case "${SHFLAGS-$-}${_trap_x-}${SETX_EXIT:-0}" in
+	*x*1) set -x ;;
+	*) set +x ;;
+	esac
+
+	[ $# -eq 0 ] || eargs exit_return
+
+	local exit_handler TRAPSVAR
+	# shellcheck disable=SC2034
+	local tmp
+
+	TRAPSVAR="TRAPS$(getpid)"
+	unset tmp
+	while stack_foreach "${TRAPSVAR}" exit_handler tmp; do
+		# Ensure the real handler sees the real status
+		(exit "${ret}")
+		"${exit_handler}" || ret="$?"
+	done
 	exit "${ret}"
 }
 
 setup_traps() {
-	[ "$#" -eq 1 ] || eargs setup_traps exit_handler
+	[ "$#" -eq 0 ] || [ "$#" -eq 1 ] ||
+	    eargs setup_traps '[exit_handler]'
 	local exit_handler="$1"
-	local sig
+	local sig TRAPSVAR
 
-	for sig in INT HUP PIPE TERM; do
-		# shellcheck disable=SC2064
-		trap "sig_handler ${sig} ${exit_handler}" "${sig}"
-	done
-	# shellcheck disable=SC2064
-	trap "exit_return ${exit_handler}" EXIT
+	TRAPSVAR="TRAPS$(getpid)"
+	if ! stack_isset "${TRAPSVAR}"; then
+		for sig in INT HUP PIPE TERM; do
+			# shellcheck disable=SC2064
+			trap "trap_pre_handler; sig_handler ${sig}" "${sig}"
+		done
+		trap "trap_pre_handler; exit_return" EXIT
+	fi
+	stack_push_front "${TRAPSVAR}" "${exit_handler}"
 }

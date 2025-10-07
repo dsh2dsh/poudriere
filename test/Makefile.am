@@ -3,6 +3,8 @@ MOSTLYCLEANFILES+=	$(TEST_LOGS:.log=.log.truss)
 MOSTLYCLEANFILES+=	$(TEST_LOGS:.log=*.log)
 MOSTLYCLEANFILES+=	prep.sh.trs prep.sh.log
 
+AM_TESTS_FD_REDIRECT= 4>&2
+
 EXTRA_DIST= $(TESTS) \
 	    $(JAIL_TESTS) \
 	    common.bulk.sh \
@@ -26,6 +28,7 @@ TESTS=\
 	cache_pipe.sh \
 	calculate_duration.sh \
 	count_lines.sh \
+	critical_section_inherit.sh \
 	display.sh \
 	distclean-badorigin.sh \
 	distclean-overlays.sh \
@@ -44,7 +47,6 @@ TESTS=\
 	gsub.sh \
 	hash_basic.sh \
 	hash_stack.sh \
-	herepipe.sh \
 	jobs.sh \
 	list.sh \
 	locked_mkdir.sh \
@@ -83,8 +85,15 @@ TESTS=\
 	relpath.sh \
 	relpath_common.sh \
 	required_env.sh \
+	setup_traps.sh \
 	setvar.sh \
-	shash_basic.sh \
+	shash-basic.sh \
+	shash-noclobber.sh \
+	shash-noclobber-piped.sh \
+	shash-race.sh \
+	shash-race-noclobber.sh \
+	shash-race-piped.sh \
+	shash-race-piped-noclobber.sh \
 	shellcheck.sh \
 	stack.sh \
 	stripansi.sh \
@@ -95,6 +104,10 @@ TESTS=\
 	trap_ignore_block.sh \
 	trap_save.sh \
 	trap_save_block.sh \
+	write_atomic.sh \
+	write_atomic-piped.sh \
+	write_atomic_cmp.sh \
+	write_atomic_cmp-piped.sh \
 	$(JAIL_TESTS)
 
 JAIL_TESTS= \
@@ -134,6 +147,7 @@ JAIL_TESTS= \
 	bulk-build-self-immutable-base-yes.sh \
 	bulk-build-self-inc-build_as_non_root-no.sh \
 	bulk-build-self-inc-build_as_non_root-yes.sh \
+	bulk-build-skips-crashed-builder.sh \
 	bulk-build-skips.sh \
 	bulk-build-specific-bad-flavor.sh \
 	bulk-flavor-FLAVORS-misordered.sh \

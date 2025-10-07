@@ -37,6 +37,7 @@ EXTRA_DIST=	\
 dist_bin_SCRIPTS=	poudriere
 
 dist_man_MANS=	src/man/poudriere.8 \
+		src/man/poudriere-audit.8 \
 		src/man/poudriere-bulk.8 \
 		src/man/poudriere-distclean.8 \
 		src/man/poudriere-image.8 \
@@ -63,6 +64,7 @@ dist_hook_DATA=	src/etc/poudriere.d/hooks/bulk.sh.sample \
 
 dist_pkgdata_DATA=	\
 			src/share/poudriere/api.sh \
+			src/share/poudriere/audit.sh \
 			src/share/poudriere/bulk.sh \
 			src/share/poudriere/common.sh \
 			src/share/poudriere/daemon.sh \
@@ -109,6 +111,7 @@ dist_shinclude_DATA= \
 dist_awk_DATA= src/share/poudriere/awk/dependency_loop.awk \
 		src/share/poudriere/awk/humanize.awk \
 		src/share/poudriere/awk/file_cmp_reg.awk \
+		src/share/poudriere/awk/git_dirty.awk \
 		src/share/poudriere/awk/json.awk \
 		src/share/poudriere/awk/json_jail.awk \
 		src/share/poudriere/awk/json_top.awk \
@@ -375,7 +378,7 @@ poudriere: src/bin/poudriere.in
 	    sed \
 	      -e "s,^\(POUDRIERE_VERSION\)=.*,\1='$${gitver}'," \
 	      -e "s,^\(USE_DEBUG\)=.*,\1='@USE_DEBUG@'," \
-	      ${.ALLSRC} > $@; \
+	      ${.ALLSRC} > $@.tmp && mv -f $@.tmp $@; \
 	else \
 	    cp -f ${.ALLSRC} $@; \
 	fi; \
@@ -384,9 +387,17 @@ poudriere: src/bin/poudriere.in
 SUBDIRS= . test
 
 checkquick:
-	$(MAKE) $(AM_MAKEFLAGS) check TESTS_SKIP_BUILD=1 TESTS_SKIP_LONG=1
+	$(MAKE) $(AM_MAKEFLAGS) check TESTS_SKIP_BUILD=1 TESTS_SKIP_LONG=1 \
+	    TESTS_SKIP_BULK=1
 
 distcheckquick:
+	$(MAKE) $(AM_MAKEFLAGS) distcheck TESTS_SKIP_BUILD=1 TESTS_SKIP_LONG=1 \
+	    TESTS_SKIP_BULK=1
+
+checkdryrun:
+	$(MAKE) $(AM_MAKEFLAGS) check TESTS_SKIP_BUILD=1 TESTS_SKIP_LONG=1
+
+distcheckdryrun:
 	$(MAKE) $(AM_MAKEFLAGS) distcheck TESTS_SKIP_BUILD=1 TESTS_SKIP_LONG=1
 
 installcheck-local:

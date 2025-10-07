@@ -1497,16 +1497,19 @@ if [ -z "${POUDRIEREPATH}" ]; then
 fi
 
 SCRIPTNAME="${SCRIPTNAME##*/}"
-POUDRIERE="${POUDRIEREPATH} -e ${POUDRIERE_ETC}"
+POUDRIERE="env VERBOSE=0 ${POUDRIEREPATH} -e ${POUDRIERE_ETC}"
 ARCH=$(uname -p)
-JAILNAME="poudriere-test-${ARCH}"
-JAIL_VERSION="13.4-RELEASE"
-JAILMNT=$(${POUDRIERE} api "jget ${JAILNAME} mnt" || echo)
+# Need to keep JAILNAME unique but not full of spam as it gets into every path
+# and makes debugging multiple worktrees difficult. Just hash the srcdir
+# into the name.
+JAILNAME="poudriere-test-${ARCH}-$(realpath "${am_abs_top_srcdir:?}" | sha256 | cut -c1-6)"
+JAIL_VERSION="13.5-RELEASE"
+JAILMNT=$(${POUDRIERE} api "jget ${JAILNAME} mnt || echo" || echo)
 export UNAME_r=$(freebsd-version)
 export UNAME_v="FreeBSD ${UNAME_r}"
-if [ -n "${JAILMNT}" ]; then
+if [ -n "${JAILMNT}" ] && [ -z "${TEST_CONTEXTS_NUM_CHECK-}" ]; then
 	# Ensure it is up-to-date otherwise delete it so it can be updated.
-	JAIL_VERSION_CUR=$(${POUDRIERE} api "jget ${JAILNAME} version" || echo)
+	JAIL_VERSION_CUR=$(${POUDRIERE} api "jget ${JAILNAME} version || echo" || echo)
 	case "${JAIL_VERSION_CUR}" in
 	"${JAIL_VERSION}") ;;
 	*)
@@ -1535,7 +1538,7 @@ if [ -z "${JAILMNT}" ]; then
 		echo "SKIP: Cannot setup jail with Poudriere" >&2
 		exit 77
 	fi
-	JAILMNT=$(${POUDRIERE} api "jget ${JAILNAME} mnt" || echo)
+	JAILMNT=$(${POUDRIERE} api "jget ${JAILNAME} mnt || echo" || echo)
 	if [ -z "${JAILMNT}" ]; then
 		echo "SKIP: Failed fetching mnt for new jail in Poudriere" >&2
 		exit 77
@@ -1547,11 +1550,12 @@ if [ ${BOOTSTRAP_ONLY:-0} -eq 1 ]; then
 	exit 0
 fi
 
-: ${PORTSDIR:=${THISDIR%/*}/test-ports/default}
+: "${TEST_PORTSDIR:=default}"
+: "${PORTSDIR:="${am_abs_top_srcdir:?}/test-ports/${TEST_PORTSDIR:?}"}"
 export PORTSDIR
 PTMNT="${PORTSDIR}"
 #: ${PTNAME:=${PTMNT##*/}}
-: ${PTNAME:=$(echo "${PORTSDIR}" | tr '[./]' '_')}
+: ${PTNAME:=$(echo "${TEST_PORTSDIR}" | tr '[./]' '_')}
 : ${SETNAME:="${SCRIPTNAME%.sh}${TEST_NUMS:+$(echo "${TEST_NUMS}" | tr ' ' '_')}"}
 export PORT_DBDIR=/dev/null
 export __MAKE_CONF="${POUDRIERE_ETC}/poudriere.d/make.conf"

@@ -31,7 +31,9 @@ EX_DATAERR=65
 EX_SOFTWARE=70
 EX_IOERR=74
 
-alias redirect_to_real_tty='>&${OUTPUT_REDIRECTED_STDOUT:-1} 2>&${OUTPUT_REDIRECTED_STDERR:-2} '
+alias redirect_to_real_stdout='>&${OUTPUT_REDIRECTED_STDOUT:-1} '
+alias redirect_to_real_stderr='2>&${OUTPUT_REDIRECTED_STDERR:-2} '
+alias redirect_to_real_tty='redirect_to_real_stdout redirect_to_real_stderr '
 alias redirect_to_bulk='redirect_to_real_tty '
 
 case "$%$+${FUNCNAME}" in
@@ -123,11 +125,19 @@ not_for_os() {
 }
 
 _err() {
+	local -; set +e +u
 	local lineinfo="${1-}"
 	local exit_status="${2-}"
 	local msg="${3-}"
 
 	if [ -n "${CRASHED:-}" ]; then
+		case "$#" in
+		[012]) ;;
+		*)
+			shift 2
+			msg="$*"
+			;;
+		esac
 		echo "err: Recursive error detected: ${msg}" >&2 || :
 		exit "${exit_status}"
 	fi
@@ -138,10 +148,13 @@ _err() {
 	trap '' INFO
 	export CRASHED=1
 	case "$#" in
-	3) ;;
-	*)
+	[012])
 		msg_error "err expects 3 arguments: exit_number \"message\": actual: '$#': $*"
 		exit ${EX_SOFTWARE}
+		;;
+	*)
+		shift 2
+		msg="$*"
 		;;
 	esac
 	# Try to set status so other processes know this crashed
@@ -363,7 +376,8 @@ msg_error() {
 	set)
 		# Send colored msg to bulk log...
 		COLOR_ARROW="${COLOR_ERROR}" \
-		    job_msg "${COLOR_ERROR}${prefix}${COLOR_RESET}" "$@"
+		    redirect_to_bulk \
+		    job_msg "${COLOR_ERROR}${prefix}${COLOR_RESET}" "$@" >&2
 		# Needed hack for test output ordering
 		if [ "${IN_TEST:-0}" -eq 1 -a -n "${TEE_SLEEP_TIME-}" ]; then
 			sleep "${TEE_SLEEP_TIME}"
@@ -375,8 +389,7 @@ msg_error() {
 		# Send to true stderr
 		COLOR_ARROW="${COLOR_ERROR}" \
 		    redirect_to_bulk \
-		    msg "${COLOR_ERROR}${prefix}${COLOR_RESET}" "$@" \
-		    >&2
+		    msg "${COLOR_ERROR}${prefix}${COLOR_RESET}" "$@" >&2
 		;;
 	esac
 	return 0
@@ -388,7 +401,7 @@ msg_dev() {
 
 	MSG_NESTED="${MSG_NESTED_STDERR:-0}"
 	COLOR_ARROW="${COLOR_DEV}" \
-	    msg "${COLOR_DEV}Dev:${COLOR_RESET} $*" >&2
+	    msg "${COLOR_DEV}[$(getpid)] Dev:${COLOR_RESET} $*" >&2
 }
 
 msg_debug() {
@@ -427,7 +440,7 @@ job_msg() {
 			now=$(clock -monotonic)
 			calculate_duration elapsed "$((now - ${TIME_START_JOB:-${TIME_START:-0}}))"
 		fi
-		output="[${COLOR_JOBID}${MY_JOBID}${COLOR_RESET}]${elapsed:+ [${elapsed}]}"
+		output="[${COLOR_JOBID-}${MY_JOBID}${COLOR_RESET}]${elapsed:+ [${elapsed}]}"
 		;;
 	*)
 		unset output
@@ -965,6 +978,11 @@ jstart() {
 }
 
 jail_has_processes() {
+	case "${PROFILING:-no}" in
+	yes)
+		return 1
+		;;
+	esac
 	local pscnt
 
 	# 2 = HEADER+ps itself
@@ -1286,6 +1304,7 @@ buildlog_start() {
 	local mnt var portdir
 	local make_vars date
 	local git_modified git_hash
+	local jname
 	local wanted_vars="
 	    MAINTAINER
 	    PORTVERSION
@@ -1297,6 +1316,7 @@ buildlog_start() {
 	    SUB_LIST
 	    "
 
+	_my_name jname
 	_my_path mnt
 	originspec_decode "${originspec}" port '' ''
 	_lookup_portdir portdir "${port}"
@@ -1336,10 +1356,8 @@ buildlog_start() {
 			    "${git_modified}"
 			echo "Ports top unclean checkout: ${git_modified}"
 		fi
-		if git_get_hash_and_dirty "${mnt:?}/${portdir:?}" 1 \
-		    git_hash git_modified; then
-			echo "Port dir last git commit: ${git_hash}"
-			pkg_note_add "${pkgname}" port_git_hash "${git_hash}"
+		if git_get_hash_and_dirty "${MASTERMNT:?}/${portdir:?}" 1 \
+		    "" git_modified; then
 			pkg_note_add "${pkgname}" port_checkout_unclean "${git_modified}"
 			echo "Port dir unclean checkout: ${git_modified}"
 		fi
@@ -1355,6 +1373,8 @@ buildlog_start() {
 	echo "Host OSVERSION: ${HOST_OSVERSION}"
 	echo "Jail OSVERSION: ${JAIL_OSVERSION}"
 	echo "Job Id: ${MY_JOBID}"
+	echo "Jail Id (no networking): $(jls -j ${jname} jid || :)"
+	echo "Jail Id (networking)   : $(jls -j ${jname}-n jid || :)"
 	echo
 	if [ ${JAIL_OSVERSION} -gt ${HOST_OSVERSION} ]; then
 		echo
@@ -1451,12 +1471,8 @@ attr_set() {
 
 	dstfile="${POUDRIERED}/${type}/${name}/${property}"
 	mkdir -p "${dstfile%/*}"
-	{
-		write_atomic_cmp "${dstfile}" || \
-		    err $? "attr_set failed to write to ${dstfile}"
-	} <<-EOF
-	$@
-	EOF
+	write_atomic_cmp "${dstfile}" "$@" ||
+	    err $? "attr_set failed to write to ${dstfile}"
 }
 
 jset() { attr_set jails "$@" ; }
@@ -1567,9 +1583,7 @@ bset() {
 		echo "$(clock -epoch):$*" >> "${log:?}/${file:?}.journal%" || :
 		;;
 	esac
-	write_atomic "${log:?}/${file:?}" <<-EOF
-	$@
-	EOF
+	write_atomic "${log:?}/${file:?}" "$@"
 }
 
 job_build_status() {
@@ -1621,7 +1635,8 @@ update_stats() {
 	done
 
 	# Skipped may have duplicates in it
-	bset stats_skipped $(bget ports.skipped | awk '{print $1}' | \
+	bset stats_skipped $(critical_inherit; \
+		bget ports.skipped | awk '{print $1}' | \
 		sort -u | wc -l)
 
 	lock_release update_stats
@@ -1683,48 +1698,8 @@ update_remaining() {
 	    write_atomic "${log:?}/.poudriere.ports.remaining"
 }
 
-sigpipe_handler() {
-	EXIT_BSTATUS="sigpipe:"
-	sig_handler PIPE exit_handler
-}
-
-sigint_handler() {
-	EXIT_BSTATUS="sigint:"
-	sig_handler INT exit_handler
-}
-
-sighup_handler() {
-	EXIT_BSTATUS="sighup:"
-	sig_handler HUP exit_handler
-}
-
-sigterm_handler() {
-	EXIT_BSTATUS="sigterm:"
-	sig_handler TERM exit_handler
-}
-
 exit_handler() {
-	# Avoid set -x output until we ensure proper stderr.
-	{
-		: ${EXIT_STATUS:="$?"}
-		unset IFS
-		set +u
-		trap - EXIT
-		trap '' PIPE INT INFO HUP TERM
-		case "${SHFLAGS-$-}${SETX_EXIT:-0}" in
-		*x*1) ;;
-		*) local -; set +x ;;
-		esac
-		# Don't spam errors with 'set +e; exit >0'.
-		case "$-" in
-		*e*) ;;
-		*) ERROR_VERBOSE=0 ;;
-		esac
-		set +e
-		IN_EXIT_HANDLER=1
-		SUPPRESS_INT=1
-		redirect_to_real_tty exec
-	} 2>/dev/null
+	: ${EXIT_STATUS:="$?"}
 
 	post_getopts
 
@@ -1903,10 +1878,6 @@ show_dry_run_summary() {
 	msg "Dry run mode, cleaning up and exiting"
 	_bget tobuild stats_tobuild ||
 	    err "${EX_SOFTWARE}" "Failed to lookup stats_tobuild"
-	# Subtract the 1 for the main port to test
-	if was_a_testport_run; then
-		tobuild=$((tobuild - 1))
-	fi
 	if [ ${tobuild} -gt 0 ]; then
 		if [ ${PARALLEL_JOBS} -gt ${tobuild} ]; then
 			PARALLEL_JOBS=${tobuild##* }
@@ -4076,7 +4047,7 @@ setup_makeconf() {
 
 include_poudriere_confs() {
 	local files file flag debug
-	local jail ptname setname
+	local jail ptname setname loaded_conf
 	local OPTIND=1
 
 	# msg_debug is not properly setup this early for VERBOSE to be set
@@ -4122,19 +4093,31 @@ include_poudriere_confs() {
 		;;
 	esac
 
+	loaded_conf=0
 	if [ -r "${POUDRIERE_ETC:?}/poudriere.conf" ]; then
+		if [ "${debug}" -gt 1 ]; then
+			msg "Reading ${POUDRIERE_ETC}/poudriere.conf"
+		fi
 		. "${POUDRIERE_ETC:?}/poudriere.conf"
-		if [ ${debug} -gt 1 ]; then
-			msg_debug "Reading ${POUDRIERE_ETC}/poudriere.conf"
-		fi
-	elif [ -r "${POUDRIERED:?}/poudriere.conf" ]; then
-		. "${POUDRIERED:?}/poudriere.conf"
-		if [ ${debug} -gt 1 ]; then
-			msg_debug "Reading ${POUDRIERED}/poudriere.conf"
-		fi
-	else
-		err 1 "Unable to find a readable poudriere.conf in ${POUDRIERE_ETC} or ${POUDRIERED}"
+		loaded_conf=1
 	fi
+	if [ -r "${POUDRIERED:?}/poudriere.conf" ]; then
+		case "$(realpath -q "${POUDRIERED:?}/poudriere.conf")" in
+		$(realpath -q "${POUDRIERE_ETC:?}/poudriere.conf")) ;;
+		*)
+			if [ "${debug}" -gt 1 ]; then
+				msg "Reading ${POUDRIERED}/poudriere.conf"
+			fi
+			. "${POUDRIERED:?}/poudriere.conf"
+			loaded_conf=1
+			;;
+		esac
+	fi
+	case "${loaded_conf}" in
+	0)
+		err 1 "Unable to find a readable poudriere.conf in ${POUDRIERE_ETC} or ${POUDRIERED}"
+		;;
+	esac
 
 	files="${setname} ${ptname} ${jail}"
 	case "${ptname:+set}.${setname:+set}" in
@@ -4154,8 +4137,8 @@ include_poudriere_confs() {
 	for file in ${files}; do
 		file="${POUDRIERED:?}/${file}-poudriere.conf"
 		if [ -r "${file}" ]; then
-			if [ ${debug} -gt 1 ]; then
-				msg_debug "Reading ${file}"
+			if [ "${debug}" -gt 1 ]; then
+				msg "Reading ${file}"
 			fi
 			. "${file}"
 		fi
@@ -5722,7 +5705,7 @@ build_queue() {
 	# jobid is analgous to MY_JOBID: builder number
 	# jobno is from $(jobs)
 	local j jobid jobno job_name builders_active queue_empty
-	local job_type builders_idle idle_only timeout
+	local job_type job_status job_finished timeout
 
 	run_hook build_queue start
 
@@ -5733,37 +5716,44 @@ build_queue() {
 
 	msg "Hit CTRL+t at any time to see build progress and stats"
 
-	idle_only=0
+	job_finished=0
 	while :; do
 		builders_active=0
-		builders_idle=0
+		# Timeout indicates how often we check for dead jobs or
+		# a stuck queue.
 		timeout=30
 		for j in ${JOBS}; do
-			# Check if job is alive. A job will have no PID if it
-			# is idle. idle_only=1 is a quick check for giving
-			# new work only to idle workers.
+			# Collect dead jobs
 			if hash_get builder_jobs "${j}" jobno; then
-				if [ ${idle_only} -eq 1 ] ||
-				    kill -0 "${jobno}" 2>/dev/null; then
-					# Job still active or skipping busy.
+				# If a job just finished we skip checking status of
+				# other jobs. We focus on filling empty slots.
+				case "${job_finished}" in
+				1)
 					builders_active=1
 					continue
-				fi
+					;;
+				esac
+				dev_assert_true kill -0 "${jobno}"
+				get_job_status "${jobno}" job_status ||
+				    err "${EX_SOFTWARE:-70}" "build_queue: get_job_status ${jobno}"
+				case "${job_status}" in
+				"Running")
+					builders_active=1
+					continue
+					;;
+				esac
+				# The job is Done or Terminated.
 				job_done "${j}"
-				# Set a 0 timeout to quickly rescan for idle
-				# builders to toss a job at since the queue
-				# may now be unblocked.
-				if [ "${queue_empty:?}" -eq 0 -a \
-				    "${builders_idle:?}" -eq 1 ]; then
-					timeout=0
-				fi
 			fi
 
 			# This builder is idle and needs work.
 
-			[ ${queue_empty} -eq 0 ] || continue
+			case "${queue_empty:?}" in
+			# Continue until we collect all jobs.
+			1) continue ;;
+			esac
 
-			pkgqueue_get_next job_type job_name || \
+			pkgqueue_get_next job_type job_name ||
 			    err 1 "Failed to find a package from the queue."
 
 			case "${job_name}" in
@@ -5773,7 +5763,6 @@ build_queue() {
 				if pkgqueue_empty; then
 					queue_empty=1
 				fi
-				builders_idle=1
 				continue
 				;;
 			esac
@@ -5796,20 +5785,27 @@ build_queue() {
 			list_add BUILDER_JOBNOS "${jobno}"
 		done
 
-		if [ ${queue_empty} -eq 1 ]; then
-			if [ ${builders_active} -eq 1 ]; then
+		case "${queue_empty:?}" in
+		1)
+			case "${builders_active:?}" in
+			1)
 				# The queue is empty, but builds are still
 				# going. Wait on them below.
 				:
-			else
+				;;
+			*)
 				# All work is done
 				pkgqueue_sanity_check 0
 				break
-			fi
-		fi
+				;;
+			esac
+			;;
+		esac
 
 		# If builders are idle then there is a problem.
-		[ ${builders_active} -eq 1 ] || pkgqueue_sanity_check
+		case "${builders_active:?}" in
+		0) pkgqueue_sanity_check 1 ;;
+		esac
 
 		update_remaining
 
@@ -5822,7 +5818,7 @@ build_queue() {
 			if job_done "${jobid}"; then
 				# Do a quick scan to try dispatching
 				# ready-to-build to idle builders.
-				idle_only=1
+				job_finished=1
 			else
 				# The job is already done. It was found to be
 				# done by a kill -0 check in a scan.
@@ -5833,7 +5829,7 @@ build_queue() {
 			# No event found. The next scan will check for
 			# crashed builders and deadlocks by validating
 			# every builder is really non-idle.
-			idle_only=0
+			job_finished=0
 			;;
 		esac
 	done
@@ -5954,6 +5950,12 @@ parallel_build() {
 
 	bset builders "${JOBS}"
 	bset status "parallel_build:"
+
+	case "${PROFILING:-no}" in
+	yes)
+		start_builders "${jname}" "${ptname}" "${setname}"
+		;;
+	esac
 
 	if [ ! -d "${MASTER_DATADIR:?}/pool" ]; then
 		err 1 "Build pool is missing"
@@ -6201,7 +6203,8 @@ build_pkg() {
 	fi
 
 	if [ -f "${mnt:?}/.tmpfs_blacklist_dir" ]; then
-		umount "${mnt:?}/wrkdirs"
+		umount -n "${mnt:?}/wrkdirs" ||
+		    umount -f "${mnt:?}/wrkdirs"
 		rm -rf "$(cat "${mnt:?}/.tmpfs_blacklist_dir")"
 	fi
 	if [ -f "${mnt:?}/.need_rollback" ]; then
@@ -6334,9 +6337,30 @@ build_pkg() {
 
 	case "${tmpfs_blacklist_dir:+set}" in
 	set)
-		umount "${mnt:?}/wrkdirs"
+		umount -n "${mnt:?}/wrkdirs" ||
+		    umount -f "${mnt:?}/wrkdirs"
 		rm -f "${mnt:?}/.tmpfs_blacklist_dir"
 		rm -rf "${tmpfs_blacklist_dir:?}"
+		;;
+	esac
+
+	case "${FP_BUILD_PKG_EXIT_PKGNAMES:+set}" in
+	set)
+		local fp_pkg_glob
+
+		set -o noglob
+		for fp_pkg_glob in ${FP_BUILD_PKG_EXIT_PKGNAMES}; do
+			# shellcheck disable=SC2254
+			case "${pkgbase}" in
+			${fp_pkg_glob})
+				msg_error "FP_BUILD_PKG_EXIT_PKGNAMES failpoint match pkgname='${pkgname}' fp_pkg_glob='${fp_pkg_glob}'"
+				# exit immediately rather than go through
+				# err() cleanup.
+				exit 1
+				;;
+			esac
+		done
+		set +o noglob
 		;;
 	esac
 
@@ -6665,7 +6689,10 @@ deps_fetch_vars() {
 		;;
 	esac
 	case "${_ignore:+set}" in
-	set) shash_set pkgname-ignore "${_pkgname}" "${_ignore}" ;;
+	set)
+		shash_set pkgname-ignore "${_pkgname}" "${_ignore}"
+		shash_set originspec-ignored "${originspec}" 1
+		;;
 	esac
 	case "${_prefix:+set}" in
 	set) shash_set pkgname-prefix "${_pkgname}" "${_prefix}" ;;
@@ -7600,245 +7627,6 @@ package_libdeps_satisfied() {
 	return "${ret}"
 }
 
-_lock_acquire() {
-	[ $# -eq 3 -o $# -eq 4 ] ||
-	    eargs _lock_acquire quiet lockpath lockname [waittime]
-	local have_lock mypid lock_pid real_lock_pid
-	local quiet="$1"
-	local lockname="$2"
-	local lockpath="$3"
-	local waittime="${4:-30}"
-
-	mypid="$(getpid)"
-	hash_get have_lock "${lockname}" have_lock || have_lock=0
-	# lock_pid is in case a subshell tries to reacquire/relase my lock
-	hash_get lock_pid "${lockname}" lock_pid || lock_pid=
-	# If the pid is set and does not match I'm a subshell and should wait
-	case "${lock_pid}" in
-	"${mypid}"|"") ;;
-	*)
-		hash_unset have_lock "${lockname}"
-		hash_unset lock_pid "${lockname}"
-		lock_pid=
-		have_lock=0
-		;;
-	esac
-	if [ "${have_lock}" -eq 0 ] &&
-		! locked_mkdir "${waittime}" "${lockpath}" "${mypid}"; then
-		if [ "${quiet}" -eq 0 ]; then
-			msg_warn "Failed to acquire ${lockname} lock"
-		fi
-		return 1
-	fi
-	# XXX: Remove this block with locked_mkdir [EINTR] fixes.
-	{
-		# locked_mkdir is quite racy. We may have gotten a false-success
-		# and need to consider it a failure.
-		if [ ! -d "${lockpath}" ]; then
-			if [ "${quiet}" -eq 0 ]; then
-				msg_warn "Lost race grabbing ${lockname} lock: no dir"
-			fi
-			return 1
-		fi
-		# Must use cat due to no EOL
-		real_lock_pid="$(cat "${lockpath}.pid")" || :
-		case "${real_lock_pid}" in
-		"${mypid}") ;;
-		*)
-			if [ "${quiet}" -eq 0 ]; then
-				msg_warn "Lost race grabbing ${lockname} lock: wrong pid: mypid=${mypid} lock_pid=${real_lock_pid}"
-			fi
-			return 1
-			;;
-		esac
-	}
-	hash_set have_lock "${lockname}" $((have_lock + 1))
-	case "${lock_pid}" in
-	"")
-		hash_set lock_pid "${lockname}" "${mypid}"
-		;;
-	esac
-}
-
-# Acquire local build lock
-lock_acquire() {
-	[ $# -eq 1 -o $# -eq 2 -o $# -eq 3 ] ||
-	    eargs lock_acquire [-q] lockname [waittime]
-	local lockname waittime lockpath
-
-	case "$1" in
-	"-q")
-		quiet=1
-		shift
-		;;
-	*)
-		quiet=0
-		;;
-	esac
-	lockname="$1"
-	waittime="$2"
-
-	lockpath="${POUDRIERE_TMPDIR:?}/lock-${MASTERNAME}-${lockname:?}"
-	_lock_acquire "${quiet}" "${lockname}" "${lockpath}" "${waittime}"
-}
-
-# while locked tmp NAME timeout; do <locked code>; done
-locked() {
-	[ "$#" -eq 2 ] || [ "$#" -eq 3 ] || eargs locked tmp_var lockname \
-	    '[waittime]'
-	local l_tmp_var="$1"
-	local lockname="$2"
-	local waittime="${3-}"
-
-	if isset "${l_tmp_var}"; then
-		lock_release "${lockname}"
-		unset "${l_tmp_var}"
-		return 1
-	fi
-	setvar "${l_tmp_var}" "1"
-	until lock_acquire "${lockname}" "${waittime}"; do
-		sleep 1
-	done
-}
-
-# Acquire system wide lock
-slock_acquire() {
-	[ $# -eq 1 -o $# -eq 2 -o $# -eq 3 ] ||
-	    eargs slock_acquire [-q] lockname [waittime]
-	local lockname waittime lockpath quiet
-
-	case "$1" in
-	"-q")
-		quiet=1
-		shift
-		;;
-	*)
-		quiet=0
-		;;
-	esac
-	lockname="$1"
-	waittime="$2"
-
-	mkdir -p "${SHARED_LOCK_DIR:?}" 2>/dev/null || :
-	lockpath="${SHARED_LOCK_DIR:?}/lock-poudriere-shared-${lockname:?}"
-	_lock_acquire "${quiet}" "${lockname}" "${lockpath}" "${waittime}" ||
-	    return
-	# This assumes SHARED_LOCK_DIR isn't overridden by caller
-	SLOCKS="${SLOCKS:+${SLOCKS} }${lockname}"
-}
-
-# while slocked tmp NAME timeout; do <locked code>; done
-slocked() {
-	[ "$#" -eq 2 ] || [ "$#" -eq 3 ] || eargs slocked tmp_var lockname \
-	    '[waittime]'
-	local s_tmp_var="$1"
-	local lockname="$2"
-	local waittime="${3-}"
-
-	if isset "${s_tmp_var}"; then
-		slock_release "${lockname}"
-		unset "${s_tmp_var}"
-		return 1
-	fi
-	setvar "${s_tmp_var}" "1"
-	until slock_acquire "${lockname}" "${waittime}"; do
-		sleep 1
-	done
-}
-
-_lock_release() {
-	[ $# -eq 2 ] || eargs _lock_release lockname lockpath
-	local lockname="$1"
-	local lockpath="$2"
-	local have_lock lock_pid mypid pid
-
-	hash_get have_lock "${lockname}" have_lock ||
-		err 1 "Releasing unheld lock ${lockname}"
-	if [ "${have_lock}" -eq 0 ]; then
-		err 1 "Release unheld lock (have_lock=0) ${lockname}"
-	fi
-	hash_get lock_pid "${lockname}" lock_pid ||
-		err 1 "Lock had no pid ${lockname}"
-	mypid="$(getpid)"
-	case "${mypid}" in
-	"${lock_pid}") ;;
-	*)
-		err 1 "Releasing lock pid ${lock_pid} owns ${lockname}"
-		;;
-	esac
-	if [ "${have_lock}" -gt 1 ]; then
-		hash_set have_lock "${lockname}" $((have_lock - 1))
-	else
-		hash_unset have_lock "${lockname}"
-		[ -f "${lockpath:?}.pid" ] ||
-			err 1 "No pidfile found for ${lockpath}"
-		# Pidfile has no trailing newline so will return 1
-		read pid < "${lockpath:?}.pid" || :
-		case "${pid}" in
-		"")
-			err 1 "Pidfile is empty for ${lockpath}"
-			;;
-		esac
-		case "${pid}" in
-		"${mypid}") ;;
-		*)
-			err 1 "Releasing lock pid ${lock_pid} owns ${lockname}"
-			;;
-		esac
-		rmdir "${lockpath:?}" ||
-			err 1 "Held lock dir not found: ${lockpath}"
-	fi
-}
-
-# Release local build lock
-lock_release() {
-	[ $# -eq 1 ] || eargs lock_release lockname
-	local lockname="$1"
-	local lockpath
-
-	lockpath="${POUDRIERE_TMPDIR:?}/lock-${MASTERNAME}-${lockname:?}"
-	_lock_release "${lockname}" "${lockpath}"
-}
-
-# Release system wide lock
-slock_release() {
-	[ $# -eq 1 ] || eargs slock_release lockname
-	local lockname="$1"
-	local lockpath
-
-	lockpath="${SHARED_LOCK_DIR:?}/lock-poudriere-shared-${lockname:?}"
-	_lock_release "${lockname}" "${lockpath}" || return
-	list_remove SLOCKS "${lockname}"
-}
-
-slock_release_all() {
-	[ $# -eq 0 ] || eargs slock_release_all
-	local lockname
-
-	case "${SLOCKS-}" in
-	"") return 0 ;;
-	esac
-	for lockname in ${SLOCKS:?}; do
-		slock_release "${lockname}"
-	done
-}
-
-lock_have() {
-	[ $# -eq 1 ] || eargs lock_have lockname
-	local lockname="$1"
-	local mypid lock_pid
-
-	if hash_isset have_lock "${lockname}"; then
-		hash_get lock_pid "${lockname}" lock_pid ||
-			err 1 "have_lock: Lock had no pid ${lockname}"
-		mypid="$(getpid)"
-		case "${lock_pid}" in
-		"${mypid}") return 0 ;;
-		esac
-	fi
-	return 1
-}
-
 have_ports_feature() {
 	local -; set -f
 	case " ${P_PORTS_FEATURES} " in
@@ -7908,7 +7696,13 @@ port_var_fetch() {
 	set +o noglob
 	varcnt="$#"
 	shiftcnt=0
-	while herepipe_read pvf_ret pvf_line; do
+	local data
+
+	data="$({
+		IFS="${sep}"
+		${MASTERNAME+injail} /usr/bin/make ${_make_origin} ${_makeflags-}
+	})" || pvf_ret=$?
+	while mapfile_read_loop_redir pvf_line; do
 		# Skip assignment vars.
 		# This var was just an assignment, no actual value to read from
 		# stdout.  Shift until we find an actual -V var.
@@ -7931,21 +7725,16 @@ port_var_fetch() {
 			shift
 			shiftcnt="$((shiftcnt + 1))"
 		fi
-	done <<-EOF
-	$({
-		herepipe_trap
-		IFS="${sep}"; ${MASTERNAME+injail} /usr/bin/make ${_make_origin} ${_makeflags-}
-	})
+	done <<-EOF || return $?
+	${data}
 	EOF
 	case "${pvf_ret}" in
 	0) ;;
-	*)
-		# Cleanup already-set vars of 'make: stopped in'
-		# stuff in case the caller is ignoring our non-0
-		# return status.  The shiftcnt handler can deal with
-		# this all itself.
-		shiftcnt=0
-		;;
+	# Cleanup already-set vars of 'make: stopped in'
+	# stuff in case the caller is ignoring our non-0
+	# return status.  The shiftcnt handler can deal with
+	# this all itself.
+	*) shiftcnt=0 ;;
 	esac
 
 	# If the entire output was blank, then $() ate all of the excess
@@ -9017,6 +8806,9 @@ generate_queue_pkg() {
 					set_pipe_fatal_error
 					continue
 				fi
+				if shash_exists originspec-ignored "${dpath}"; then
+					continue
+				fi
 				case "${dep_real_pkgname%-*}" in
 				"${dep_pkgname}") ;;
 				*)
@@ -9564,7 +9356,7 @@ git_get_hash_and_dirty() {
 	[ "$#" -eq 4 ] || eargs git_get_hash_and_dirty git_dir inport \
 	    git_hash_var git_modified_var
 	local git_dir="$1"
-	local inport="$2"
+	local inport="${2:-0}"
 	local gghd_git_hash_var="$3"
 	local gghd_git_modified_var="$4"
 	local gghd_git_hash gghd_git_modified
@@ -9572,10 +9364,18 @@ git_get_hash_and_dirty() {
 	if [ ! -x "${GIT_CMD}" ]; then
 		return 1
 	fi
-	${GIT_CMD} -C "${git_dir:?}" rev-parse --show-toplevel \
-	    >/dev/null 2>&1 || return
-	gghd_git_hash=$(${GIT_CMD} -C "${git_dir:?}" log -1 \
-	    --format=%h .)
+
+	case "${gghd_git_hash_var-}" in
+	"") ;;
+	*)
+		${GIT_CMD} -C "${git_dir:?}" rev-parse --show-toplevel \
+		    >/dev/null 2>&1 || return
+		gghd_git_hash=$(${GIT_CMD} -C "${git_dir:?}" log -1 \
+		    --format=%h .)
+		setvar "${gghd_git_hash_var}" "${gghd_git_hash}"
+		;;
+	esac
+
 	gghd_git_modified=no
 	msg_n "Inspecting ${git_dir} for modifications to git checkout..."
 	case "${GIT_TREE_DIRTY_CHECK-}" in
@@ -9589,58 +9389,56 @@ git_get_hash_and_dirty() {
 		;;
 	esac
 	echo " ${gghd_git_modified}"
-	setvar "${gghd_git_hash_var}" "${gghd_git_hash}"
 	setvar "${gghd_git_modified_var}" "${gghd_git_modified}"
 }
 
 git_tree_dirty() {
-	[ $# -eq 2 ] || eargs git_tree_dirty git_dir inport
+	[ "$#" -eq 1 ] || [ "$#" -eq 2 ] ||
+	    eargs git_tree_dirty git_dir "[inport]"
 	local git_dir="$1"
-	local inport="$2"
-	local file
+	local inport="${2:-0}"
 
-	if ! ${GIT_CMD} -C "${git_dir}" \
-	    -c core.checkStat=minimal \
-	    -c core.fileMode=off \
-	    diff --quiet .; then
+	case "${inport}" in
+	0)
+		# Global: Recache.
+		git_tree_dirty_cache "${git_dir}"
+		;;
+	esac
+	if shash_exists git_tree_dirty "${git_dir}"; then
 		return 0
 	fi
+	return 1
+}
 
-	${GIT_CMD} -C "${git_dir}" ls-files --directory --others . | (
-	# Look for patches and .local files
-		while mapfile_read_loop_redir file; do
-			if [ "${inport}" -eq 0 ]; then
-				case "${file}" in
-				Makefile.local|\
-				*/Makefile.local|\
-				*/*/Makefile.local)
-					return 0
-					;;
-				*/*/files/*)
-					case "${file}" in
-					# Mk/Scripts/do-patch.sh
-					*.orig|*.rej|*~|*,v) ;;
-					*) return 0 ;;
-					esac
-					;;
-				esac
-			else
-				case "${file}" in
-				Makefile.local)
-					return 0
-					;;
-				files/*)
-					case "${file}" in
-					# Mk/Scripts/do-patch.sh
-					*.orig|*.rej|*~|*,v) ;;
-					*) return 0 ;;
-					esac
-					;;
-				esac
-			fi
-		done
-		return 1
-	)
+git_tree_dirty_cache() {
+	[ "$#" -eq 1 ] ||
+	    eargs git_tree_dirty_cache git_dir
+	local git_dir="$1"
+	local dirty modified
+	local portdir
+
+	shash_remove_var "git_tree_dirty"
+
+	${GIT_CMD} -C "${git_dir}" \
+	    -c core.checkStat=minimal \
+	    -c core.fileMode=off \
+	    -c status.renames=false \
+	    -c core.untrackedCache=true \
+	    -c advice.statusUoption=false \
+	    status \
+	    --ignored \
+	    --porcelain . |
+	    awk -f "${AWKPREFIX}/git_dirty.awk" |
+	    while mapfile_read_loop_redir portdir; do
+		case "${portdir}" in
+		".")
+			shash_set "git_tree_dirty" "${git_dir}" 1
+			;;
+		*)
+			shash_set "git_tree_dirty" "${git_dir}/${portdir}" 1
+			;;
+		esac
+	done
 }
 
 trim_ignored() {
@@ -9884,7 +9682,14 @@ prepare_ports() {
 			delete_all_pkgs "-c specified"
 		fi
 		if [ ${CLEAN_LISTED} -eq 1 ]; then
-			msg "-C specified, cleaning listed packages"
+			local reason
+
+			if was_a_testport_run; then
+				reason="testport"
+			else
+				msg "-C specified, cleaning listed packages"
+				reason="-C"
+			fi
 			delete_pkg_list=$(mktemp -t poudriere.cleanC)
 			delay_pipe_fatal_error
 			listed_pkgnames | while mapfile_read_loop_redir \
@@ -9895,7 +9700,7 @@ prepare_ports() {
 					    "${pkgname}"; then
 						continue
 					fi
-					msg "(-C) Will delete existing package: ${COLOR_PORT}${pkg##*/}${COLOR_RESET}"
+					msg "(${reason}) Will delete existing package: ${COLOR_PORT}${pkg##*/}${COLOR_RESET}"
 					delete_pkg_xargs "${delete_pkg_list:?}" \
 					    "${pkg:?}"
 					if [ -L "${pkg%.*}.txz" ]; then
@@ -9906,18 +9711,19 @@ prepare_ports() {
 				fi
 			done
 			if check_pipe_fatal_error; then
-				err 1 "Error processing -C packages"
+				err 1 "Error cleaning listed packages"
 			fi
 			case "${ATOMIC_PACKAGE_REPOSITORY}" in
 			yes) ;;
 			*)
-				if [ -s "${delete_pkg_list}" ]; then
+				if ! was_a_testport_run &&
+				    [ -s "${delete_pkg_list}" ]; then
 					confirm_if_tty "Are you sure you want to delete the listed packages?" ||
 					    err 1 "Not cleaning packages"
 				fi
 				;;
 			esac
-			msg "(-C) Flushing package deletions"
+			msg "(${reason}) Flushing package deletions"
 			cat "${delete_pkg_list:?}" | tr '\n' '\000' | \
 			    xargs -0 rm -rf
 			unlink "${delete_pkg_list:?}" || :
@@ -9979,6 +9785,7 @@ prepare_ports() {
 			cd "${SHASH_VAR_PATH:?}"
 			for shash_bucket in \
 			    origin-flavor-all \
+			    originspec-ignored \
 			    pkgname-ignore \
 			    pkgname-options \
 			    pkgname-deps \
@@ -10775,7 +10582,7 @@ esac
 : ${TRIM_ORPHANED_BUILD_DEPS:=yes}
 : ${USE_PROCFS:=yes}
 : ${USE_FDESCFS:=yes}
-: ${IMMUTABLE_BASE:=no}
+: ${IMMUTABLE_BASE:=schg}
 : ${PKG_REPO_LIST_FILES:=no}
 : ${PKG_REPRODUCIBLE:=no}
 : ${HTML_JSON_UPDATE_INTERVAL:=2}
@@ -10879,10 +10686,6 @@ if [ -e /nonexistent ]; then
 fi
 
 if [ "${IN_TEST:-0}" -eq 0 ]; then
-	trap sigpipe_handler PIPE
-	trap sigint_handler INT
-	trap sighup_handler HUP
-	trap sigterm_handler TERM
-	trap "exit_return exit_handler" EXIT
+	setup_traps exit_handler
 	enable_siginfo_handler
 fi
