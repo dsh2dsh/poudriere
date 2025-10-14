@@ -60,6 +60,7 @@
 #define main locked_mkdircmd
 #include "bltin/bltin.h"
 #include "helpers.h"
+#include "trap.h"
 #undef FILE	/* Avoid sh version */
 #undef fprintf	/* Avoid sh version */
 #endif
@@ -281,7 +282,7 @@ main(int argc, char **argv)
 	int kq, lockdirfd, waitsec, nevents;
 	pid_t writepid, lockpid;
 #ifdef SHELL
-	int serrno;
+	int ret, serrno, sig;
 
 	dirfd = -1;
 	lockfd = -1;
@@ -349,7 +350,10 @@ main(int argc, char **argv)
 		cleanup();
 		INTON;
 #endif
-		return (EX_TEMPFAIL);
+		if (timed_out)
+			return (124);
+		else
+			return (EX_TEMPFAIL);
 	}
 
 	/* At this point, we own the lock. */
@@ -411,18 +415,37 @@ retry:
 		    EV_ADD | EV_ENABLE | EV_ONESHOT, NOTE_EXIT, 0, NULL);
 	}
 
+#ifdef SHELL
+retry_kevent:
+#endif
 	switch (kevent(kq, (struct kevent *)&event, nevents,
 	    (struct kevent *)&event, nevents, &timeout)) {
 	    case -1:
 #ifdef SHELL
 		serrno = errno;
+		if ((timeout.tv_nsec > 0 || timeout.tv_nsec > 0) &&
+		    serrno == EINTR) {
+			sig = pendingsig;
+			if (sig == 0) {
+				goto retry_kevent;
+			}
+			ret = 128 + sig;
+		} else {
+			ret = EX_OSERR;
+		}
 		close(kq);
 		close(lockdirfd);
 		cleanup();
 		INTON;
 		errno = serrno;
+		if (errno == EINTR) {
+			exit(ret);
+		} else {
+			err(ret, "kevent");
+		}
+#else
+		err(EX_OSERR, "%s", "kevent");
 #endif
-		err(1, "%s", "kevent()");
 		/* NOTREACHED */
 	    case 0:
 		/* Timeout */
@@ -432,7 +455,7 @@ retry:
 		cleanup();
 		INTON;
 #endif
-		return (EX_TEMPFAIL);
+		return (124);
 		/* NOTREACHED */
 	    default:
 		break;

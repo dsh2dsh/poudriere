@@ -515,7 +515,7 @@ randint() {
 	[ "$#" -eq 1 ] || [ "$#" -eq 2 ] ||
 	    eargs randint max_val '[var_return]'
 	local max_val="$1"
-	local var_return="${2-}"
+	local r_outvar="${2-}"
 	local val
 
 	if [ "$#" -eq 1 ]; then
@@ -523,7 +523,7 @@ randint() {
 		return
 	fi
 	val=$(jot -r 1 "${max_val}")
-	setvar "${var_return}" "${val}"
+	setvar "${r_outvar}" "${val}"
 }
 ;;
 esac
@@ -580,7 +580,7 @@ trap_push() {
 	local -; set +x
 	[ $# -eq 2 ] || eargs trap_push signal var_return
 	local signal="$1"
-	local var_return="$2"
+	local tp_outvar="$2"
 	local _trap ldash lhandler lsig
 
 	_trap="-"
@@ -605,7 +605,7 @@ trap_push() {
 	$(trap)
 	EOF
 
-	setvar "${var_return}" "${_trap}"
+	setvar "${tp_outvar}" "${_trap}"
 }
 
 trap_pop() {
@@ -616,7 +616,10 @@ trap_pop() {
 
 	case "${_trap:+set}" in
 	set) eval trap -- "${_trap}" "${signal}" || : ;;
-	"") return 1 ;;
+	"")
+		msg_error "Invalid saved_trap"
+		return 1
+		;;
 	esac
 }
 
@@ -690,11 +693,11 @@ esac
 read_file() {
 	local -; set +x
 	[ $# -eq 2 ] || eargs read_file var_return file
-	local var_return="$1"
+	local rf_outvar="$1"
 	local rf_file="$2"
 	local rf_ret - IFS
 
-	# var_return may be empty if only $_read_file_lines_read is being
+	# rf_outvar may be empty if only $_read_file_lines_read is being
 	# used.
 	rf_ret=0
 	_read_file_lines_read=0
@@ -708,15 +711,15 @@ read_file() {
 		-|/dev/stdin|/dev/fd/0) ;;
 		*)
 			if [ ! -r "${rf_file:?}" ]; then
-				case "${var_return}" in
+				case "${rf_outvar}" in
 				""|-) ;;
-				*) unset "${var_return}" ;;
+				*) unset "${rf_outvar}" ;;
 				esac
 				return "${EX_NOINPUT:-66}"
 			fi
 			;;
 		esac
-		case "${var_return:+set}" in
+		case "${rf_outvar:+set}" in
 		set)
 			rf_data="$(cat "${rf_file}")" || rf_ret="$?"
 			;;
@@ -727,15 +730,15 @@ read_file() {
 			    _read_file_lines_read=0
 			;;
 		esac
-		case "${var_return}" in
+		case "${rf_outvar}" in
 		"") ;;
 		-) echo "${rf_data}" ;;
-		*) setvar "${var_return}" "${rf_data}" || return ;;
+		*) setvar "${rf_outvar}" "${rf_data}" || return ;;
 		esac
 
 		return "${rf_ret}"
 	else
-		readlines_file "${rf_file}" ${var_return:+"${var_return}"} ||
+		readlines_file "${rf_file}" ${rf_outvar:+"${rf_outvar}"} ||
 		    rf_ret="$?"
 		_read_file_lines_read="${_readlines_lines_read:?}"
 		return "${rf_ret}"
@@ -808,14 +811,14 @@ readlines() {
 
 readlines_file() {
 	# Blank vars will still read and output $_readlines_lines_read
-	[ "$#" -ge 1 ] || eargs readlines_file '[-T]' file '[vars...]'
+	[ "$#" -ge 1 ] || eargs readlines_file '[-T]' file '[-|vars...]'
 	local rlf_file
 	local rlf_var rlf_line rlf_var_count
 	local rlf_rest rlf_nl rlf_handle rlf_ret
 	local flag Tflag
 	local OPTIND=1 IFS
 
-	Tflag=0
+	Tflag=
 	while getopts "T" flag; do
 		case "${flag}" in
 		T)
@@ -825,7 +828,7 @@ readlines_file() {
 		esac
 	done
 	shift $((OPTIND-1))
-	[ "$#" -ge 1 ] || eargs readlines_file '[-T]' file '[vars...]'
+	[ "$#" -ge 1 ] || eargs readlines_file '[-T]' file '[-|vars...]'
 	rlf_file="$1"
 	shift
 
@@ -841,11 +844,17 @@ readlines_file() {
 		fi
 		;;
 	esac
-
+	rlf_ret=0
+	case "$#.${1-}" in
+	1.-)
+		mapfile_cat_file "${rlf_file:?}" || rlf_ret="$?"
+		_readlines_lines_read="${_mapfile_cat_file_lines_read:?}"
+		return "${rlf_ret}"
+		;;
+	esac
 	rlf_nl=${RL_NL-$'\n'}
 	rlf_var_count="$#"
 	unset rlf_rest
-	rlf_ret=0
 	if mapfile -F rlf_handle "${rlf_file:?}" "r"; then
 		while IFS= mapfile_read "${rlf_handle}" rlf_line; do
 			_readlines_lines_read="$((_readlines_lines_read + 1))"
@@ -1556,6 +1565,7 @@ mapfile_cat() {
 	[ $# -ge 1 ] || eargs mapfile_cat '[-T fd]' handle...
 	local OPTIND=1 Tflag flag ret
 
+	_mapfile_cat_lines_read=0
 	Tflag=
 	while getopts "T:" flag; do
 		case "${flag}" in
@@ -1570,6 +1580,7 @@ mapfile_cat() {
 	ret=0
 	for handle in "$@"; do
 		while IFS= mapfile_read "${handle}" line; do
+			_mapfile_cat_lines_read="$((_mapfile_cat_lines_read + 1))"
 			# shellcheck disable=SC2320
 			echo "${line}" || ret=$?
 			case "${Tflag}" in
@@ -1592,6 +1603,7 @@ mapfile_cat_file() {
 	local  _handle ret _file
 	local OPTIND=1 Tflag qflag flag
 
+	_mapfile_cat_file_lines_read=0
 	qflag=
 	Tflag=
 	while getopts "qT:" flag; do
@@ -1617,6 +1629,7 @@ mapfile_cat_file() {
 			mapfile_cat ${Tflag:+-T "${Tflag}"} "${_handle}" ||
 			    ret="$?"
 			mapfile_close "${_handle}" || ret="$?"
+			_mapfile_cat_file_lines_read="${_mapfile_cat_lines_read:?}"
 		else
 			ret="$?"
 		fi
@@ -1895,7 +1908,7 @@ prefix_stderr_quick() {
 prefix_stderr() {
 	local extra="$1"
 	shift 1
-	local prefixpipe prefixpid ret
+	local prefixpipe prefix_job prefixpid ret
 	local prefix MSG_NESTED_STDERR
 	local - errexit
 
@@ -1923,6 +1936,7 @@ prefix_stderr() {
 	) < "${prefixpipe}" &
 	set +m
 	prefixpid="$!"
+	get_job_id "${prefixpid}" prefix_job
 	exec 4>&2
 	exec 2> "${prefixpipe}"
 	unlink "${prefixpipe}"
@@ -1938,17 +1952,7 @@ prefix_stderr() {
 	fi
 
 	exec 2>&4 4>&-
-	case "${INJOB-}" in
-	1)
-		timed_wait_and_kill 5 "${prefixpid}" || :
-		;;
-	*)
-		local prefix_job
-
-		get_job_id "${prefixpid}" prefix_job
-		timed_wait_and_kill_job 5 "%${prefix_job}" || :
-		;;
-	esac
+	timed_wait_and_kill_job 5 "%${prefix_job}" || :
 
 	return ${ret}
 }
@@ -1956,7 +1960,7 @@ prefix_stderr() {
 prefix_stdout() {
 	local extra="$1"
 	shift 1
-	local prefixpipe prefixpid ret
+	local prefixpipe prefix_job prefixpid ret
 	local prefix MSG_NESTED
 	local - errexit
 
@@ -1982,6 +1986,7 @@ prefix_stdout() {
 	) < "${prefixpipe}" &
 	set +m
 	prefixpid="$!"
+	get_job_id "${prefixpid}" prefix_job
 	exec 3>&1
 	exec > "${prefixpipe}"
 	unlink "${prefixpipe}"
@@ -1997,17 +2002,7 @@ prefix_stdout() {
 	fi
 
 	exec 1>&3 3>&-
-	case "${INJOB-}" in
-	1)
-		timed_wait_and_kill 5 "${prefixpid}" || :
-		;;
-	*)
-		local prefix_job
-
-		get_job_id "${prefixpid}" prefix_job
-		timed_wait_and_kill_job 5 "%${prefix_job}" || :
-		;;
-	esac
+	timed_wait_and_kill_job 5 "%${prefix_job}" || :
 
 	return ${ret}
 }
@@ -2015,7 +2010,7 @@ prefix_stdout() {
 prefix_output() {
 	local extra="$1"
 	local prefix_stdout prefix_stderr prefixpipe_stdout prefixpipe_stderr
-	local ret MSG_NESTED MSG_NESTED_STDERR prefix_job prefixpid
+	local ret MSG_NESTED MSG_NESTED_STDERR prefix_job
 	local - errexit
 	shift 1
 
@@ -2041,7 +2036,6 @@ prefix_output() {
 	    -1 "${prefix_stdout}" -o "${prefixpipe_stdout}" \
 	    -2 "${prefix_stderr}" -e "${prefixpipe_stderr}" \
 	    -P "poudriere: ${PROC_TITLE} (prefix_output)"
-	prefixpid="$!"
 	prefix_job="${spawn_jobid}"
 	exec 3>&1
 	exec > "${prefixpipe_stdout}"
@@ -2063,14 +2057,7 @@ prefix_output() {
 	fi
 
 	exec 1>&3 3>&- 2>&4 4>&-
-	case "${INJOB-}" in
-	1)
-		timed_wait_and_kill 5 "${prefixpid}" || :
-		;;
-	*)
-		timed_wait_and_kill_job 5 "%${prefix_job}" || :
-		;;
-	esac
+	timed_wait_and_kill_job 5 "%${prefix_job}" || :
 
 	return ${ret}
 }
@@ -2134,7 +2121,7 @@ timespecsub() {
 
 calculate_duration() {
 	[ $# -eq 2 ] || eargs calculate_duration var_return elapsed
-	local var_return="$1"
+	local cd_outvar="$1"
 	local _elapsed="$2"
 	local seconds minutes hours days _duration
 
@@ -2153,12 +2140,12 @@ calculate_duration() {
 	_duration=$(printf "%s%02d:%02d:%02d" "${_duration}" \
 	    "${hours}" "${minutes}" "${seconds}")
 
-	setvar "${var_return}" "${_duration}"
+	setvar "${cd_outvar}" "${_duration}"
 }
 
 _write_atomic() {
 	local -; set +x
-	[ $# -eq 3 ] || [ $# -eq 4 ] ||
+	[ $# -eq 3 ] || [ $# -ge 4 ] ||
 	    eargs _write_atomic cmp tee destfile '< data | data'
 	local cmp="$1"
 	local tee="$2"
@@ -2169,7 +2156,8 @@ _write_atomic() {
 	shift 3
 	unset data
 	case "$#" in
-	1) data=1 ;;
+	0) ;;
+	*) data=1 ;;
 	esac
 	case "$-${tee-}" in
 	C1)
@@ -2261,7 +2249,7 @@ write_atomic_cmp() {
 		esac
 	done
 	shift $((OPTIND-1))
-	[ $# -eq 1 ] || [ $# -eq 2 ] ||
+	[ $# -eq 1 ] || [ $# -ge 2 ] ||
 	    eargs write_atomic_cmp '[-T]' destfile '< data | data'
 
 	_write_atomic 1 "${Tflag}" "$@" || return
@@ -2284,7 +2272,7 @@ write_atomic() {
 		esac
 	done
 	shift $((OPTIND-1))
-	[ $# -eq 1 ] || [ $# -eq 2 ] ||
+	[ $# -eq 1 ] || [ $# -ge 2 ] ||
 	    eargs write_atomic '[-T]' destfile '< data | data'
 
 	_write_atomic 0 "${Tflag}" "$@" || return
@@ -2522,15 +2510,20 @@ _lock_read_pid() {
 	[ $# -eq 2 ] || eargs _lock_read_pid pidfile pid_var_return
 	local _lrp_pidfile="$1"
 	local _lrp_var_return="$2"
-	local _lrp_pid
+	local _lrp_pid _lrp_tries _lrp_max
 
 	# The pidfile has no newline, so read until we have a value
 	# regardless of the read error. The rereads are to avoid
 	# racing with signals.
 	_lrp_pid=
-	until [ "${_lrp_pid:+set}" == "set" ]; do
+	_lrp_tries=0
+	_lrp_max=20
+	until [ "${_lrp_pid:+set}" == "set" ] ||
+	    [ "${_lrp_tries:?}" -eq "${_lrp_max:?}" ]; do
 		read -r _lrp_pid < "${_lrp_pidfile:?}" || :
+		_lrp_tries="$((_lrp_tries + 1))"
 	done
+	# This || return to make it clear this function may error.
 	setvar "${_lrp_var_return:?}" "${_lrp_pid:?}" || return
 }
 
@@ -2559,13 +2552,21 @@ _lock_acquire() {
 		have_lock=0
 		;;
 	esac
-	if [ "${have_lock}" -eq 0 ] &&
-		! locked_mkdir "${waittime}" "${lockpath}" "${mypid}"; then
-		if [ "${quiet}" -eq 0 ]; then
-			msg_warn "Failed to acquire ${lockname} lock"
-		fi
-		return 1
-	fi
+	if [ "${have_lock}" -eq 0 ]; then
+		local lm_ret
+
+		lm_ret=0
+		locked_mkdir "${waittime}" "${lockpath}" "${mypid}" ||
+		    lm_ret="$?"
+		case "${lm_ret}" in
+		0) ;;
+		*)
+			if [ "${quiet}" -eq 0 ]; then
+				msg_warn "Failed to acquire ${lockname} lock ret=${lm_ret}"
+			fi
+			return "${lm_ret}"
+			;;
+		esac
 	# XXX: Remove this block with locked_mkdir [EINTR] fixes.
 	{
 		# locked_mkdir is quite racy. We may have gotten a false-success
@@ -2576,7 +2577,8 @@ _lock_acquire() {
 			fi
 			return 1
 		fi
-		_lock_read_pid "${lockpath:?}.pid" real_lock_pid
+		_lock_read_pid "${lockpath:?}.pid" real_lock_pid ||
+		    real_lock_pid=
 		case "${real_lock_pid}" in
 		"${mypid}") ;;
 		*)
@@ -2587,6 +2589,14 @@ _lock_acquire() {
 			;;
 		esac
 	}
+	elif [ "${have_lock}" -eq 1 ]; then
+		# Lock recursion may happen in a trap handler if the lock
+		# was held before the trap.
+		:
+	else
+		# However it should not happen once.
+		err 1 "Attempted double recursive locking of ${lockname}"
+	fi
 	hash_set have_lock "${lockname}" $((have_lock + 1))
 	case "${lock_pid}" in
 	"")
@@ -2614,7 +2624,7 @@ lock_acquire() {
 	lockname="$1"
 	waittime="$2"
 
-	lockpath="${POUDRIERE_TMPDIR:?}/lock-${MASTERNAME}-${lockname:?}"
+	lockpath="${POUDRIERE_TMPDIR:?}/lock-${MASTERNAME:+${MASTERNAME}-}${lockname:?}"
 	_lock_acquire "${quiet}" "${lockname}" "${lockpath}" "${waittime}"
 }
 
@@ -2657,7 +2667,7 @@ slock_acquire() {
 	lockname="$1"
 	waittime="$2"
 
-	mkdir -p "${SHARED_LOCK_DIR:?}" 2>/dev/null || :
+	mkdir -p "${SHARED_LOCK_DIR:?}" || return
 	lockpath="${SHARED_LOCK_DIR:?}/lock-poudriere-shared-${lockname:?}"
 	_lock_acquire "${quiet}" "${lockname}" "${lockpath}" "${waittime}" ||
 	    return
@@ -2713,7 +2723,7 @@ _lock_release() {
 		hash_unset have_lock "${lockname}"
 		[ -f "${lockpath:?}.pid" ] ||
 			err 1 "No pidfile found for ${lockpath}"
-		_lock_read_pid "${lockpath:?}.pid" pid
+		_lock_read_pid "${lockpath:?}.pid" pid || pid=
 		case "${pid}" in
 		"")
 			err 1 "Pidfile is empty for ${lockpath}"
@@ -2728,6 +2738,9 @@ _lock_release() {
 		rmdir "${lockpath:?}" ||
 			err 1 "Held lock dir not found: ${lockpath}"
 	fi
+
+	# Callers assume _lock_release cannot fail.
+	return 0
 }
 
 # Release local build lock
@@ -2737,7 +2750,7 @@ lock_release() {
 	local lockname="$1"
 	local lockpath
 
-	lockpath="${POUDRIERE_TMPDIR:?}/lock-${MASTERNAME}-${lockname:?}"
+	lockpath="${POUDRIERE_TMPDIR:?}/lock-${MASTERNAME:+${MASTERNAME}-}${lockname:?}"
 	_lock_release "${lockname}" "${lockpath}"
 }
 
@@ -2782,4 +2795,9 @@ lock_have() {
 		esac
 	fi
 	return 1
+}
+
+# This is mostly for tests to assert without having the assert hidden.
+hide_stderr() {
+	"$@" 2>/dev/null
 }

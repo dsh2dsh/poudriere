@@ -169,6 +169,9 @@ sorted() {
 }
 
 catch_err() {
+	expect_error_on_stderr _catch_err "$@"
+}
+_catch_err() {
 	#local ERRORS_ARE_FATAL CRASHED
 	local TEST_HARD_ERROR
 	local ret -
@@ -202,6 +205,49 @@ catch_err() {
 		;;
 	esac
 	return "${ret}"
+}
+
+: "${READY_FILE:=condchan}"
+cond_timedwait() {
+	local maxtime="$1"
+	local which="${2-}"
+	local reason="${3-}"
+	local start now got_reason
+
+	start="$(clock -monotonic)"
+	until [ -e "${READY_FILE:?}${which:+.${which}}" ]; do
+		sleep 0.001
+		now="$(clock -monotonic)"
+		if [ "$((now - start))" -gt "${maxtime}" ]; then
+			msg_error "cond_timedwait: Timeout waiting for signal ${which:+which='${which}' }reason='${reason}'"
+			return 1
+		fi
+	done
+	got_reason=
+	read got_reason < "${READY_FILE:?}${which:+.${which}}"
+	echo "${which:+${which} }sent signal: ${got_reason}" >&2
+	assert "${reason}" "${got_reason}" "READY FILE reason"
+	rm -f "${READY_FILE:?}${which:+.${which}}"
+}
+
+cond_signal() {
+	local which="${1-}"
+	local reason="${2-}"
+
+	case "${reason:+set}" in
+	set)
+		# Likely noclobber failure if this fails.
+		# Using 'noclobber' to make log clearer.
+		assert_true noclobber \
+		    write_atomic "${READY_FILE:?}${which:+.${which}}" "${reason}"
+		;;
+	*)
+		local -
+
+		set -C # noclobber
+		: > "${READY_FILE:?}${which:+.${which}}" || return
+		;;
+	esac
 }
 
 capture_output_simple() {
@@ -334,6 +380,42 @@ expand_test_contexts() {
 		nest(0, 0)
 	}
 	'
+}
+
+add_test_function() {
+	[ $# -eq 1 ] || eargs add_test_context function
+
+	TESTFUNCS="${TESTFUNCS:+${TESTFUNCS} }$1"
+}
+
+list_test_functions() {
+	local func
+
+	case "${TESTFUNCS+set}" in
+	set) ;;
+	*) return 0 ;;
+	esac
+
+	for func in ${TESTFUNCS}; do
+		echo -n "${func} "
+	done
+	echo
+}
+
+run_test_functions() {
+	[ $# -eq 0 ] || eargs run_test_functions
+
+	case "${TESTFUNCS+set}" in
+	set) ;;
+	*) err 99 "run_test_functions: no add_test_function() called" ;;
+	esac
+
+	set_test_contexts - '' '' <<-EOF
+	TESTFUNC $(list_test_functions)
+	EOF
+	while get_test_context; do
+		assert_true "${TESTFUNC}"
+	done
 }
 
 # set_test_contexts setup_str teardown_str <<env matrix
@@ -496,6 +578,14 @@ cleanup() {
 	kill_all_jobs 20
 	if [ ${_DID_TMPDIR:-0} -eq 1 ] && \
 	    [ "${TMPDIR%%/poudriere/test/*}" != "${TMPDIR}" ]; then
+		find "${POUDRIERE_TMPDIR:?}/" \
+		    \( \
+		    -name "lock-*.flock" -o \
+		    -name "lock-*.pid" \
+		    \) -type f -delete
+		find "${POUDRIERE_TMPDIR:?}/" \
+		    -name "lock-*" \
+		    -type d -empty -delete
 		if [ -d "${TMPDIR}" ] && ! dirempty "${TMPDIR}"; then
 			echo "${TMPDIR} was not empty on exit!" >&2
 			find "${TMPDIR}" -ls >&2
@@ -542,15 +632,38 @@ cleanup() {
 	return "${ret}"
 }
 
+expect_error_on_stderr() {
+	local -; set +e
+	local tmpfile ret
+
+	tmpfile="$(mktemp -ut expect_error_on_stderr)"
+	ret=0
+	"$@" 2>"${tmpfile}" || ret="$?"
+	# We can't _assert_ that there is an error as some calls won't actually
+	# get 'Error:' with SH=/bin/sh. It's not that important to ensure
+	# stderr has stuff, it's more about causing a FAIL if 'Error:' is
+	# unexpectedly seen in a log.
+	sed -i '' -e 's,Error:,ExpectedError:,' "${tmpfile}"
+	cat "${tmpfile}" >&2
+	rm -f "${tmpfile}"
+	return "${ret}"
+}
+
 . ${SCRIPTPREFIX}/common.sh
 post_getopts
 
 setup_traps cleanup
 
 msg_debug "getpid: $$"
-
-if [ -r "${abs_top_srcdir}/.git" ] &&
-    git_get_hash_and_dirty "${abs_top_srcdir}" 0 git_hash git_dirty; then
-	msg "Source git hash: ${git_hash} modified: ${git_dirty}"
-fi >&2
-unset git_hash git_dirty
+case "${TEST_CONTEXTS_NUM_CHECK:+set}" in
+set) ;;
+*)
+	if [ -r "${am_abs_top_srcdir:?}/.git" ] &&
+	    git_get_hash_and_dirty "${am_abs_top_srcdir:?}" 0 \
+	    git_hash git_dirty; then
+		msg "Source git hash: ${git_hash} modified: ${git_dirty}"
+	fi >&2
+	shash_remove_var "git_tree_dirty" 2>/dev/null || :
+	unset git_hash git_dirty
+	;;
+esac

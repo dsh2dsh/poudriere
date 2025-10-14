@@ -31,9 +31,6 @@
  * OF SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/types.h>
 #include <sys/event.h>
 #include <sys/time.h>
@@ -42,6 +39,7 @@ __FBSDID("$FreeBSD$");
 #include <err.h>
 #include <errno.h>
 #include <signal.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -52,12 +50,12 @@ __FBSDID("$FreeBSD$");
 #define main pwaitcmd
 #include "bltin/bltin.h"
 #include "helpers.h"
+#include "trap.h"
 #endif
 
 static void
 usage(void)
 {
-
 	fprintf(stderr, "usage: pwait [-t timeout] [-ov] pid ...\n");
 	exit(EX_USAGE);
 }
@@ -69,24 +67,25 @@ int
 main(int argc, char *argv[])
 {
 #ifdef SHELL
-	struct sigdata info_oact, alrm_oact;
+	struct sigdata alrm_oact;
 	int pushed_alarm;
 #endif
 	struct itimerval itv;
 	struct kevent *e;
-	int oflag, tflag, verbose;
-	int i, kq, n, nleft, opt, status;
-	long pid;
 	char *end, *s;
 	double timeout;
-	pid_t me;
+	long pid;
+	pid_t mypid;
+	int i, kq, n, nleft, opt, status;
+	bool oflag, tflag, verbose;
 
-	oflag = 0;
-	tflag = 0;
-	verbose = 0;
+	oflag = false;
+	tflag = false;
+	verbose = false;
 	memset(&itv, 0, sizeof(itv));
 
 #ifdef SHELL
+	int serrno, sig, ret;
 	pushed_alarm = 0;
 #endif
 	while ((opt = getopt(argc, argv, "ot:v")) != -1) {
@@ -95,23 +94,29 @@ main(int argc, char *argv[])
 			oflag = 1;
 			break;
 		case 't':
-			tflag = 1;
+			tflag = true;
 			errno = 0;
 			timeout = strtod(optarg, &end);
 			if (end == optarg || errno == ERANGE || timeout < 0) {
 				errx(EX_DATAERR, "timeout value");
 			}
-			switch(*end) {
-			case 0:
+			switch (*end) {
+			case '\0':
+				break;
 			case 's':
+				end++;
 				break;
 			case 'h':
 				timeout *= 60;
 				/* FALLTHROUGH */
 			case 'm':
 				timeout *= 60;
+				end++;
 				break;
 			default:
+				errx(EX_DATAERR, "timeout unit");
+			}
+			if (*end != '\0') {
 				errx(EX_DATAERR, "timeout unit");
 			}
 			if (timeout > 100000000L) {
@@ -123,7 +128,7 @@ main(int argc, char *argv[])
 			    (suseconds_t)(timeout * 1000000UL);
 			break;
 		case 'v':
-			verbose = 1;
+			verbose = true;
 			break;
 		default:
 			usage();
@@ -138,20 +143,12 @@ main(int argc, char *argv[])
 		usage();
 	}
 
-#ifndef SHELL
-	me = getpid();
-#else
-	me = -1;
-#endif
-
 #ifdef SHELL
 	INTOFF;
-	trap_push(SIGINFO, &info_oact);
 #endif
 	kq = kqueue();
 	if (kq == -1) {
 #ifdef SHELL
-		trap_pop(SIGINFO, &info_oact);
 		INTON;
 #endif
 		err(EX_OSERR, "kqueue");
@@ -161,16 +158,20 @@ main(int argc, char *argv[])
 	if (e == NULL) {
 #ifdef SHELL
 		close(kq);
-		trap_pop(SIGINFO, &info_oact);
 		INTON;
 #endif
 		err(EX_OSERR, "malloc");
 	}
 	nleft = 0;
+#ifndef SHELL
+	mypid = getpid();
+#else
+	mypid = -1;
+#endif
 	for (n = 0; n < argc; n++) {
 		s = argv[n];
 		/* Undocumented Solaris compat */
-		if (!strncmp(s, "/proc/", 6)) {
+		if (strncmp(s, "/proc/", 6) == 0) {
 			s += 6;
 		}
 		errno = 0;
@@ -179,8 +180,8 @@ main(int argc, char *argv[])
 			warnx("%s: bad process id", s);
 			continue;
 		}
-		if (pid == me) {
-			warnx("%s: ignoring own process id", s);
+		if (pid == mypid) {
+			warnx("%s: skipping my own pid", s);
 			continue;
 		}
 		for (i = 0; i < nleft; i++) {
@@ -199,7 +200,6 @@ main(int argc, char *argv[])
 #ifdef SHELL
 				close(kq);
 				free(e);
-				trap_pop(SIGINFO, &info_oact);
 				INTON;
 #endif
 				exit(EX_OK);
@@ -219,7 +219,6 @@ main(int argc, char *argv[])
 #ifdef SHELL
 			close(kq);
 			free(e);
-			trap_pop(SIGINFO, &info_oact);
 			INTON;
 #endif
 			err(EX_OSERR, "kevent");
@@ -235,7 +234,6 @@ main(int argc, char *argv[])
 #ifdef SHELL
 			close(kq);
 			free(e);
-			trap_pop(SIGINFO, &info_oact);
 			trap_pop(SIGALRM, &alrm_oact);
 			INTON;
 #endif
@@ -246,16 +244,31 @@ main(int argc, char *argv[])
 		n = kevent(kq, NULL, 0, e, nleft + tflag, NULL);
 		if (n == -1) {
 #ifdef SHELL
+			serrno = errno;
+			if (tflag && serrno == EINTR) {
+				sig = pendingsig;
+				if (sig == 0)
+					continue;
+				ret = 128 + sig;
+			} else {
+				ret = EX_OSERR;
+			}
 			close(kq);
 			free(e);
-			trap_pop(SIGINFO, &info_oact);
 			if (tflag && pushed_alarm) {
 				alarm(0);
 				trap_pop(SIGALRM, &alrm_oact);
 			}
 			INTON;
-#endif
+			errno = serrno;
+			if (errno == EINTR) {
+				exit(ret);
+			} else {
+				err(ret, "kevent");
+			}
+#else
 			err(EX_OSERR, "kevent");
+#endif
 		}
 		for (i = 0; i < n; i++) {
 			if (e[i].filter == EVFILT_SIGNAL) {
@@ -265,7 +278,6 @@ main(int argc, char *argv[])
 #ifdef SHELL
 				close(kq);
 				free(e);
-				trap_pop(SIGINFO, &info_oact);
 				if (tflag && pushed_alarm) {
 					alarm(0);
 					trap_pop(SIGALRM, &alrm_oact);
@@ -293,7 +305,6 @@ main(int argc, char *argv[])
 #ifdef SHELL
 				close(kq);
 				free(e);
-				trap_pop(SIGINFO, &info_oact);
 				if (tflag && pushed_alarm) {
 					alarm(0);
 					trap_pop(SIGALRM, &alrm_oact);
@@ -309,7 +320,6 @@ main(int argc, char *argv[])
 #ifdef SHELL
 	close(kq);
 	free(e);
-	trap_pop(SIGINFO, &info_oact);
 	if (tflag && pushed_alarm) {
 		alarm(0);
 		trap_pop(SIGALRM, &alrm_oact);

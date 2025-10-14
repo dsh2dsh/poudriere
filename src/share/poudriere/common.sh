@@ -892,23 +892,44 @@ do_confirm_delete() {
 	return ${ret}
 }
 
+setup_jexec_limits()  {
+	[ $# -eq 1 ] || eargs setup_jexec_limits pkgbase
+	local pkgbase="$1"
+	local pkgbase_varname limit_var
+
+	_gsub_var_name "${pkgbase:?}" pkgbase_varname
+	for limit_var in EXECUTION_TIME FILES MEMORY; do
+		if isset "MAX_${limit_var:?}_${pkgbase_varname:?}"; then
+			getvar "MAX_${limit_var:?}_${pkgbase_varname:?}" \
+			    MAX_${limit_var:?}
+		fi
+	done
+	case "${MAX_MEMORY:+set}${MAX_FILES:+set}" in
+	*set*)
+		JEXEC_LIMITS=1
+		;;
+	esac
+}
+
 injail() {
 	local -; set +x
 	case "${DISALLOW_NETWORKING}" in
 	"yes") local JNETNAME= ;;
 	esac
 
-	if [ ${INJAIL_HOST:-0} -eq 1 ]; then
+	case "${INJAIL_HOST:-0}" in
+	1)
 		# For test/
-		"$@"
-	else
-		injail_direct "$@"
-	fi
+		"$@" || return
+		return
+		;;
+	esac
+	injail_direct "$@"
 }
 
 injail_direct() {
 	local name
-	local MAX_MEMORY_BYTES
+	local MAX_MEMORY_BYTES MAX_FILES
 	case "${DISALLOW_NETWORKING}" in
 	"yes") local JNETNAME= ;;
 	esac
@@ -917,22 +938,26 @@ injail_direct() {
 	case "${name}" in
 	"") err 1 "No jail setup" ;;
 	esac
-	if [ ${JEXEC_LIMITS:-0} -eq 1 ]; then
-		unset MAX_MEMORY_BYTES
+	unset MAX_MEMORY_BYTES
+	case "${JEXEC_LIMITS:-0}" in
+	1)
 		case "${MAX_MEMORY:+set}" in
 		set)
 			MAX_MEMORY_BYTES="$((MAX_MEMORY * 1024 * 1024 * 1024))"
 			;;
 		esac
-		${JEXEC_SETSID-} jexec -U ${JUSER:-root} ${name:?}${JNETNAME:+-${JNETNAME}} \
-			${JEXEC_LIMITS+/usr/bin/limits} \
-			${MAX_MEMORY_BYTES:+-v ${MAX_MEMORY_BYTES}} \
-			${MAX_FILES:+-n ${MAX_FILES}} \
-			"$@"
-	else
-		${JEXEC_SETSID-} jexec -U ${JUSER:-root} ${name:?}${JNETNAME:+-${JNETNAME}} \
-			"$@"
-	fi
+		;;
+	0)
+		unset MAX_FILES
+		;;
+	esac
+	${JEXEC_SETSID-} jexec \
+		-U "${JUSER:-root}" \
+		"${name:?}${JNETNAME:+-${JNETNAME}}" \
+		${JEXEC_LIMITS+/usr/bin/limits} \
+		${MAX_MEMORY_BYTES:+-v "${MAX_MEMORY_BYTES}"} \
+		${MAX_FILES:+-n "${MAX_FILES}"} \
+		"$@"
 }
 
 injail_tty() {
@@ -949,31 +974,31 @@ jstart() {
 		MAX_MEMORY_BYTES="$((MAX_MEMORY * 1024 * 1024 * 1024))"
 		;;
 	esac
-	network="${LOCALIPARGS}"
+	network="${LOCALIPARGS:?}"
 
 	case "${RESTRICT_NETWORKING-}" in
 	"yes") ;;
 	*)
-		network="${IPARGS} ${JAIL_NET_PARAMS}"
+		network="${IPARGS:?} ${JAIL_NET_PARAMS-}"
 		;;
 	esac
 
 	_my_name name
 
-	mpath=${MASTERMNT:?}${MY_JOBID:+/../${MY_JOBID}}
+	mpath="${MASTERMNT:?}${MY_JOBID:+/../${MY_JOBID}}"
 	echo "::1 ${name:?}" >> "${mpath:?}/etc/hosts"
 	echo "127.0.0.1 ${name:?}" >> "${mpath:?}/etc/hosts"
 
 	# Restrict to no networking (if RESTRICT_NETWORKING==yes)
-	jail -c persist name=${name:?} \
-		path=${mpath:?} \
-		host.hostname=${BUILDER_HOSTNAME-${name}} \
-		${network} ${JAIL_PARAMS}
+	jail -c persist "name=${name:?}" \
+		"path=${mpath:?}" \
+		"host.hostname=${BUILDER_HOSTNAME-${name}}" \
+		"${network}" ${JAIL_PARAMS-}
 	# Allow networking in -n jail
-	jail -c persist name=${name}-n \
-		path=${mpath:?} \
-		host.hostname=${BUILDER_HOSTNAME-${name}} \
-		${IPARGS} ${JAIL_PARAMS} ${JAIL_NET_PARAMS}
+	jail -c persist "name=${name}-n" \
+		"path=${mpath:?}" \
+		"host.hostname=${BUILDER_HOSTNAME-${name}}" \
+		${IPARGS:?} ${JAIL_PARAMS-} ${JAIL_NET_PARAMS-}
 	return 0
 }
 
@@ -1016,8 +1041,8 @@ jstop() {
 	local name
 
 	_my_name name
-	jail -r ${name:?} 2>/dev/null || :
-	jail -r ${name:?}-n 2>/dev/null || :
+	jail -r "${name:?}" 2>/dev/null || :
+	jail -r "${name:?}-n" 2>/dev/null || :
 }
 
 eargs() {
@@ -1266,6 +1291,7 @@ log_start() {
 			    timestamp > ${logfile} < ${logfile}.pipe &
 		fi
 		get_job_id "$!" log_start_job
+		msg_dev "log_start: spawned job %${log_start_job} pid=$!"
 		exec > ${logfile}.pipe 2>&1
 
 		# Remove fifo pipe file right away to avoid orphaning it.
@@ -1480,12 +1506,12 @@ pset() { attr_set ports "$@" ; }
 
 _attr_get() {
 	[ $# -eq 4 ] || eargs _attr_get var_return type name property
-	local var_return="$1"
+	local _ag_outvar="$1"
 	local type="$2"
 	local name="$3"
 	local property="$4"
 
-	read_file "${var_return}" \
+	read_file "${_ag_outvar}" \
 	    "${POUDRIERED}/${type}/${name}/${property}"
 }
 
@@ -1504,18 +1530,18 @@ attr_get() {
 jget() { attr_get jails "$@" ; }
 _jget() {
 	[ $# -eq 3 ] || eargs _jget var_return ptname property
-	local var_return="$1"
+	local _jg_outvar="$1"
 
 	shift
-	_attr_get "${var_return}" jails "$@"
+	_attr_get "${_jg_outvar}" jails "$@"
 }
 pget() { attr_get ports "$@" ; }
 _pget() {
 	[ $# -eq 3 ] || eargs _pget var_return ptname property
-	local var_return="$1"
+	local _pg_outvar="$1"
 
 	shift
-	_attr_get "${var_return}" ports "$@"
+	_attr_get "${_pg_outvar}" ports "$@"
 }
 
 #build getter/setter
@@ -1524,9 +1550,9 @@ _bget() {
 	case "${POUDRIERE_BUILD_TYPE-}" in
 	"") return 1 ;;
 	esac
-	local var_return id property mnt log file READ_FILE_USE_CAT file
+	local _bg_outvar id property mnt log file READ_FILE_USE_CAT file
 
-	var_return="$1"
+	_bg_outvar="$1"
 	_log_path log
 	shift
 	if [ $# -eq 2 ]; then
@@ -1542,7 +1568,7 @@ _bget() {
 		;;
 	esac
 
-	read_file "${var_return}" "${log:?}/${file:?}"
+	read_file "${_bg_outvar}" "${log:?}/${file:?}"
 }
 
 bget() {
@@ -1700,6 +1726,8 @@ update_remaining() {
 
 exit_handler() {
 	: ${EXIT_STATUS:="$?"}
+	# SIGPIPE is blocked while in here from setup_traps() as we want
+	# to ensure we cleanup jails before giving up.
 
 	post_getopts
 
@@ -1724,10 +1752,28 @@ exit_handler() {
 		    [ -d "${MASTER_DATADIR}" ]; then
 			cd "${MASTER_DATADIR:?}"
 		fi
+
+		# Save the .p dir on error exit.
+		# Super cautious to avoid any errors here.
+		case "${EXIT_STATUS}" in
+		0|130) ;;
+		*)
+			case "${MASTER_DATADIR:+set}.${BUILDNAME:+set}.${MASTERNAME:+set}" in
+			set.set.set)
+				local log
+
+				if _log_path log; then
+					find -x "${MASTER_DATADIR}" -ls \
+					    > "${log:?}/.poudriere.datadir%"
+				fi
+				;;
+			esac
+			;;
+		esac
 	fi
 
 	case "${EXIT_STATUS}" in
-	0|"${EX_USAGE}")
+	0|130|"${EX_USAGE}")
 		: ${ERROR_VERBOSE:=0} ;;
 	*)	: ${ERROR_VERBOSE:=1} ;;
 	esac
@@ -1793,13 +1839,12 @@ exit_handler() {
 	ret=0
 	kill_all_jobs || ret="$?"
 	case "${ret}" in
-	0|143) ;;
+	0|143|130) ;;
 	*)
 		msg_error "Job failures detected ret=${ret}"
 		EXIT_STATUS=$((EXIT_STATUS + 1))
 		;;
 	esac
-
 	case "${EXIT_STATUS}" in
 	0)
 		if check_pipe_fatal_error; then
@@ -1812,9 +1857,6 @@ exit_handler() {
 		;;
 	esac
 
-	if lock_have "jail_start_${MASTERNAME}"; then
-		slock_release "jail_start_${MASTERNAME}" || :
-	fi
 	slock_release_all || :
 	case "${POUDRIERE_TMPDIR:+set}" in
 	set)
@@ -2245,6 +2287,7 @@ fetch_file() {
 
 # Make sure 'mktemp foo' wasn't passed in without a prefix.
 _validate_mktemp() {
+	local -; set +x
 	local OPTIND flag
 
 	OPTIND=1
@@ -2421,6 +2464,7 @@ markfs() {
 }
 
 rm() {
+	local -; set +x
 	local arg
 
 	for arg in "$@"; do
@@ -4544,7 +4588,9 @@ download_from_repo() {
 		    "${remote_all_abi}" "${remote_all_prefix}" \
 		    "${remote_all_cats}" "${wantedpkgs}"
 	done
-	parallel_stop
+	if ! parallel_stop; then
+		err 1 "Package fetch: Errors detected downloading packages"
+	fi
 	rm -f "${missing_pkgs}" \
 	    "${remote_all_pkgs}" "${remote_all_options}" "${remote_all_deps}" \
 	    "${remote_all_annotations}" "${remote_all_abi}" \
@@ -4681,7 +4727,9 @@ download_from_repo_post_delete() {
 		parallel_run \
 		    download_from_repo_make_log "${fpkgname}" "${packagesite}"
 	done | write_atomic "${log:?}/.poudriere.pkg_fetch%"
-	parallel_stop
+	if ! parallel_stop; then
+		err 1 "Errors creating fetched package logs"
+	fi
 	mv -f "${MASTER_DATADIR:?}/pkg_fetch_url" \
 	    "${log:?}/.poudriere.pkg_fetch_url%"
 	# update_stats
@@ -5265,9 +5313,10 @@ build_port() {
 			chown -R ${JUSER} "${mnt:?}/.npkg"
 			:> "${mnt:?}/.npkg_mounted"
 
+			pkgenv="${PKGENV}"
 			# Only set PKGENV during 'package' to prevent
 			# testport-built packages from going into the main repo
-			pkg_notes_get "${pkgname}" "${PKGENV}" pkgenv
+			pkg_notes_get "${pkgname}" pkgenv
 			case "${PKG_NO_VERSION_FOR_DEPS}" in
 			"no") ;;
 			*)
@@ -5602,7 +5651,9 @@ start_builders() {
 		parallel_run start_builder "${j}" \
 		    "${jname}" "${ptname}" "${setname}"
 	done
-	parallel_stop
+	if ! parallel_stop; then
+		err 1 "Errors starting builders"
+	fi
 
 	run_hook start_builders stop
 }
@@ -5648,7 +5699,9 @@ stop_builders() {
 		for j in ${JOBS-$(jot -w %02d ${real_parallel_jobs})}; do
 			parallel_run stop_builder "${j}"
 		done
-		parallel_stop
+		if ! parallel_stop; then
+			err 1 "Errors stopping builders"
+		fi
 
 		case "${TMPFS_BLACKLIST_TMPDIR:+set}" in
 		set)
@@ -5715,6 +5768,7 @@ build_queue() {
 	queue_empty=0
 
 	msg "Hit CTRL+t at any time to see build progress and stats"
+	msg_dev "build_queue: JOBS=${JOBS}"
 
 	job_finished=0
 	while :; do
@@ -5742,6 +5796,7 @@ build_queue() {
 					continue
 					;;
 				esac
+				msg_dev "build_queue: loop discovered job=${jobno} j=${j} was Done: $(jobs -l)"
 				# The job is Done or Terminated.
 				job_done "${j}"
 			fi
@@ -5755,6 +5810,8 @@ build_queue() {
 
 			pkgqueue_get_next job_type job_name ||
 			    err 1 "Failed to find a package from the queue."
+			msg_dev "build_queue: pkgqueue_get_next got" \
+			    "job=${job_type-}${job_name:+:${job_name}}"
 
 			case "${job_name}" in
 			"")
@@ -5762,6 +5819,9 @@ build_queue() {
 				# need-to-run pools are empty.
 				if pkgqueue_empty; then
 					queue_empty=1
+					msg_dev "build_queue: queue empty"
+				else
+					msg_dev "build_queue: queue idle"
 				fi
 				continue
 				;;
@@ -5783,6 +5843,8 @@ build_queue() {
 			hash_set builder_job_type "${j}" "${job_type}"
 			hash_set builder_job_name "${j}" "${job_name}"
 			list_add BUILDER_JOBNOS "${jobno}"
+			msg_dev "build_queue: launched jobno=${jobno}" \
+			    "job=${job_type}:${job_name}"
 		done
 
 		case "${queue_empty:?}" in
@@ -5804,7 +5866,13 @@ build_queue() {
 
 		# If builders are idle then there is a problem.
 		case "${builders_active:?}" in
-		0) pkgqueue_sanity_check 1 ;;
+		0)
+			msg_dev "build_queue: pkgqueue_sanity_check on idle" \
+			    "$(clock -monotonic)"
+			pkgqueue_sanity_check 1
+			msg_dev "build_queue: pkgqueue_sanity_check return" \
+			    "$(clock -monotonic)"
+			;;
 		esac
 
 		update_remaining
@@ -5814,18 +5882,24 @@ build_queue() {
 		read_blocking -t "${timeout}" jobid <&6 || :
 		case "${jobid:+set}" in
 		set)
+			msg_dev "build_queue: jobpipe read job=${jobid}"
 			# A job just finished.
 			if job_done "${jobid}"; then
 				# Do a quick scan to try dispatching
 				# ready-to-build to idle builders.
 				job_finished=1
+				msg_dev "build_queue: jobno=${jobid} job_done" \
+				    "success"
 			else
 				# The job is already done. It was found to be
 				# done by a kill -0 check in a scan.
 				:
+				msg_dev "build_queue: job=${jobid} was" \
+				    "already done"
 			fi
 			;;
 		"")
+			msg_dev "build_queue: jobpipe read timeout"
 			# No event found. The next scan will check for
 			# crashed builders and deadlocks by validating
 			# every builder is really non-idle.
@@ -5895,6 +5969,12 @@ parallel_build() {
 			shash_remove_var "${shash_bucket}" || :
 		done
 	)
+
+	# The port-to-test is "queued" but won't build in here. Avoid
+	# starting a builder for it.
+	if was_a_testport_run; then
+		nremaining="$((nremaining - 1))"
+	fi
 
 	# If pool is empty, just return
 	if [ "${nremaining:?}" -eq 0 ]; then
@@ -6117,8 +6197,8 @@ build_pkg() {
 	local log
 	local errortype="???"
 	local ret=0
-	local tmpfs_blacklist_dir
-	local elapsed now pkgname_varname jpkg_glob originspec status
+	local tmpfs_blacklist_dir JEXEC_LIMITS
+	local elapsed now jpkg_glob originspec status
 	local PORTTESTING
 	local -
 
@@ -6179,14 +6259,7 @@ build_pkg() {
 	_lookup_portdir portdir "${port}"
 
 	pkgbase="${pkgname%-*}"
-	_gsub_var_name "${pkgbase}" pkgname_varname
-	eval "MAX_EXECUTION_TIME=\${MAX_EXECUTION_TIME_${pkgname_varname}:-${MAX_EXECUTION_TIME:-}}"
-	eval "MAX_FILES=\${MAX_FILES_${pkgname_varname}:-${DEFAULT_MAX_FILES}}"
-	eval "MAX_MEMORY=\${MAX_MEMORY_${pkgname_varname}:-${MAX_MEMORY:-}}"
-	if [ -n "${MAX_MEMORY}" -o -n "${MAX_FILES}" ]; then
-		JEXEC_LIMITS=1
-	fi
-	unset pkgname_varname
+	setup_jexec_limits "${pkgbase:?}"
 	MNT_DATADIR="${mnt:?}/${DATADIR_NAME:?}"
 	add_relpath_var MNT_DATADIR
 	cd "${MNT_DATADIR:?}"
@@ -6353,7 +6426,7 @@ build_pkg() {
 			# shellcheck disable=SC2254
 			case "${pkgbase}" in
 			${fp_pkg_glob})
-				msg_error "FP_BUILD_PKG_EXIT_PKGNAMES failpoint match pkgname='${pkgname}' fp_pkg_glob='${fp_pkg_glob}'"
+				msg_error "FP_BUILD_PKG_EXIT_PKGNAMES failpoint match pkgbase='${pkgbase}' fp_pkg_glob='${fp_pkg_glob}'"
 				# exit immediately rather than go through
 				# err() cleanup.
 				exit 1
@@ -7406,7 +7479,9 @@ delete_old_pkgs() {
 		esac
 		parallel_run delete_old_pkg "${pkg}" "${delete_unqueued}"
 	done
-	parallel_stop
+	if ! parallel_stop; then
+		err 1 "Errors deleting packages"
+	fi
 
 	run_hook delete_old_pkgs stop
 }
@@ -10395,7 +10470,7 @@ POUDRIERE_DATA="$(get_data_dir)"
 if [ -e "${POUDRIERE_DATA}" ]; then
 	POUDRIERE_DATA=$(realpath "${POUDRIERE_DATA}")
 fi
-: ${WRKDIR_ARCHIVE_FORMAT="tbz"}
+: ${WRKDIR_ARCHIVE_FORMAT="txz"}
 case "${WRKDIR_ARCHIVE_FORMAT}" in
 	tar|tgz|tbz|txz|tzst);;
 	*) err 1 "invalid format for WRKDIR_ARCHIVE_FORMAT: ${WRKDIR_ARCHIVE_FORMAT}" ;;
@@ -10504,7 +10579,7 @@ case "${IPS:?}" in
 	;;
 esac
 
-NCPU="$(sysctl -n hw.ncpu)"
+NCPU="$(nproc)"
 
 case ${PARALLEL_JOBS} in
 ''|*[!0-9]*)
@@ -10584,7 +10659,7 @@ esac
 : ${USE_FDESCFS:=yes}
 : ${IMMUTABLE_BASE:=schg}
 : ${PKG_REPO_LIST_FILES:=no}
-: ${PKG_REPRODUCIBLE:=no}
+: ${PKG_REPRODUCIBLE:=yes}
 : ${HTML_JSON_UPDATE_INTERVAL:=2}
 : ${HTML_TRACK_REMAINING:=no}
 : ${GIT_TREE_DIRTY_CHECK:=yes}
@@ -10657,7 +10732,6 @@ esac
 export LC_COLLATE
 
 : ${MAX_FILES:=8192}
-: ${DEFAULT_MAX_FILES:=${MAX_FILES}}
 : ${PIPE_FATAL_ERROR_FILE:="${POUDRIERE_TMPDIR:?}/pipe_fatal_error-$$"}
 HAVE_FDESCFS=0
 case "$(mount -t fdescfs | awk '$3 == "/dev/fd" {print $3}')" in

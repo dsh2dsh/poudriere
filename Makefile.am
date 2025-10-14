@@ -152,6 +152,7 @@ pkglibexec_PROGRAMS= \
 		     dirempty \
 		     dirwatch \
 		     locked_mkdir \
+		     lockf \
 		     nc \
 		     poudriered \
 		     ptsort \
@@ -161,7 +162,7 @@ pkglibexec_PROGRAMS= \
 		     setsid \
 		     timeout \
 		     timestamp \
-		     @SH@
+		     @BUILD_SH@
 EXTRA_PROGRAMS= \
 		rm \
 		sh
@@ -185,6 +186,7 @@ cpdup_CFLAGS=	$(AM_CFLAGS) -D_ST_FLAGS_PRESENT_=1 -Wno-deprecated-declarations
 dirempty_SOURCES=	src/libexec/poudriere/dirempty/dirempty.c
 dirwatch_SOURCES=	src/libexec/poudriere/dirwatch/dirwatch.c
 locked_mkdir_SOURCES=	src/libexec/poudriere/locked_mkdir/locked_mkdir.c
+lockf_SOURCES=		external/lockf/lockf.c
 nc_SOURCES=		src/libexec/poudriere/nc/nc.c
 pwait_SOURCES=		external/pwait/pwait.c
 rename_SOURCES=		src/libexec/poudriere/rename/rename.c
@@ -387,12 +389,10 @@ poudriere: src/bin/poudriere.in
 SUBDIRS= . test
 
 checkquick:
-	$(MAKE) $(AM_MAKEFLAGS) check TESTS_SKIP_BUILD=1 TESTS_SKIP_LONG=1 \
-	    TESTS_SKIP_BULK=1
+	$(MAKE) $(AM_MAKEFLAGS) check TESTS_SKIP_BUILD=1 TESTS_SKIP_LONG=1
 
 distcheckquick:
-	$(MAKE) $(AM_MAKEFLAGS) distcheck TESTS_SKIP_BUILD=1 TESTS_SKIP_LONG=1 \
-	    TESTS_SKIP_BULK=1
+	$(MAKE) $(AM_MAKEFLAGS) distcheck TESTS_SKIP_BUILD=1 TESTS_SKIP_LONG=1
 
 checkdryrun:
 	$(MAKE) $(AM_MAKEFLAGS) check TESTS_SKIP_BUILD=1 TESTS_SKIP_LONG=1
@@ -405,3 +405,5 @@ installcheck-local:
 
 # Rebuild if configure options change
 $(SOURCES):		src/config.h
+
+SH ?= $(BUILD_SH)

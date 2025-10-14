@@ -45,7 +45,7 @@ writer() {
 {
 	TMP=$(mktemp -u)
 	assert_ret_not 0 [ -e "${TMP}" ]
-	assert_ret_not 0 mapfile handle "${TMP}" "re"
+	assert_ret_not 0 expect_error_on_stderr mapfile handle "${TMP}" "re"
 	rm -f "${TMP}"
 }
 
@@ -53,7 +53,7 @@ writer() {
 	TMP=$(mktemp -u)
 	TMP2=$(mktemp -u)
 	TMP3=$(mktemp -u)
-	assert_false mapfile file_read "${TMP}" "re"
+	assert_false expect_error_on_stderr mapfile file_read "${TMP}" "re"
 	:> "${TMP}"
 	assert_true mapfile file_read "${TMP}" "re"
 	assert_false test -r "${TMP2}"
@@ -92,7 +92,8 @@ writer() {
 	assert_true mapfile_read "${file_read}" line
 	assert "file_read0" "${line}"
 	assert_true mapfile_write "${file_write1}" "data1"
-	assert_true mapfile_write "${file_write2}" "data2"
+	assert_true mapfile_write "${file_write2}" "data2" "data3"
+	assert_true mapfile_write "${file_write2}" "data4" "data5 data6"
 	assert_true mapfile_read "${file_read}" line
 	assert "read0" "${line}"
 	assert_false mapfile_read "${file_read}" line
@@ -112,7 +113,8 @@ writer() {
 
 	assert_file - "${TMP3}" <<-EOF
 	file_write2
-	data2
+	data2 data3
+	data4 data5 data6
 	EOF
 
 	rm -f "${TMP}" "${TMP2}" "${TMP3}"
@@ -238,7 +240,7 @@ if mapfile_builtin; then
 	assert_true mapfile_write "${file}" "test 1 2 3"
 	assert_true mapfile_close "${file}"
 
-	assert_false mapfile file "${TMP}" "wx"
+	assert_false expect_error_on_stderr mapfile file "${TMP}" "wx"
 
 	assert_file - "${TMP}" <<-EOF
 	test 1 2 3
@@ -253,8 +255,7 @@ if mapfile_builtin; then
 	assert_true mapfile_write "${file}" "test 1 2 3"
 	assert_true mapfile_close "${file}"
 
-	noclobber mapfile file "${TMP}" "w+"
-	assert_not 0 $?
+	assert_false expect_error_on_stderr noclobber mapfile file "${TMP}" "w+"
 }
 
 # Now test read setting vars properly.
@@ -482,7 +483,7 @@ fi
 		touch "${TDIR:?}/${n}"
 		i=$((i + 1))
 	done
-	assert_false rmdir "${TDIR:?}"
+	assert_false expect_error_on_stderr rmdir "${TDIR:?}"
 	n=5
 	until [ $n -eq $((max + 5)) ]; do
 		assert_true [ -e "${TDIR:?}/${n}" ]
@@ -736,7 +737,7 @@ fi
 }
 
 {
-	assert_ret_not 0 mapfile_cat_file /nonexistent
+	assert_ret_not 0 expect_error_on_stderr mapfile_cat_file /nonexistent
 	assert_ret_not 0 mapfile_cat_file -q /nonexistent
 }
 
@@ -748,6 +749,7 @@ fi
 	assert_ret 0 mapfile handle "${TMP2}" "we"
 	assert_ret 0 mapfile_cat_file "${TMP}" |
 	    assert_ret 0 mapfile_write "${handle}"
+	assert 0 "${_mapfile_cat_file_lines_read}"
 	assert 0 "$?" "pipe exit status"
 	assert_ret 0 mapfile_close "${handle}"
 	[ ! -s "${TMP2}" ]
@@ -820,6 +822,8 @@ fi
 
 	:>"${TMP2}"
 	assert_ret 0 mapfile_cat_file "${TMP}" > "${TMP2}"
+	count_lines "${TMP}" lines
+	assert "${lines}" "${_mapfile_cat_file_lines_read}"
 	assert_ret 0 diff -u "${TMP}" "${TMP2}"
 	rm -f "${TMP}" "${TMP2}"
 }
@@ -1080,6 +1084,8 @@ fi
 	assert_not "" "${ps_handle}"
 	#assert_ret 0 kill -0 "$!"
 	assert_ret 0 mapfile_cat "${ps_handle}" > "${TMP}.2"
+	count_lines "${TMP}" lines
+	assert "${lines}" "${_mapfile_cat_lines_read}"
 	assert_file "${TMP}" "${TMP}.2"
 	assert_ret 0 mapfile_close "${ps_handle}"
 	#assert_ret_not 0 kill -0 "$!"

@@ -655,7 +655,7 @@ mapfile_read_loopcmd(int argc, char **argv)
 }
 
 static int
-_mapfile_cat(struct mapped_data *md, int tee_fd)
+_mapfile_cat(struct mapped_data *md, int tee_fd, size_t *lines)
 {
 	char *line;
 	ssize_t linelen;
@@ -669,7 +669,9 @@ _mapfile_cat(struct mapped_data *md, int tee_fd)
 			err(EXIT_FAILURE, "%s", "fdopen");
 		}
 	}
+	*lines = 0;
 	while ((rret = _mapfile_read(md, &line, &linelen, NULL)) == 0) {
+		(*lines)++;
 		INTON;
 		outbin(line, linelen, out1);
 		out1c('\n');
@@ -702,6 +704,8 @@ mapfile_catcmd(int argc, char **argv)
 	const char *handle;
 	char *end;
 	int i, ch, Tflag, error, ret;
+	size_t lines;
+	char liness[10];
 
 	Tflag = -1;
 	while ((ch = getopt(argc, argv, "T:")) != -1) {
@@ -722,16 +726,21 @@ mapfile_catcmd(int argc, char **argv)
 
 	error = 0;
 	ret = 0;
+	lines = 0;
+	setvarsafe("_mapfile_cat_lines_read", "0", 0);
 	for (i = 0; i < argc; i++) {
 		handle = argv[i];
 		INTOFF;
 		md = md_find(handle);
-		if ((error = _mapfile_cat(md, Tflag)) != 0) {
+		lines = 0;
+		if ((error = _mapfile_cat(md, Tflag, &lines)) != 0) {
 			ret = error;
 		}
 		assert(is_int_on());
 		INTON;
 	}
+	snprintf(liness, sizeof(liness), "%zd", lines);
+	setvarsafe("_mapfile_cat_lines_read", liness, 0);
 
 	return (ret);
 }
@@ -745,6 +754,8 @@ mapfile_cat_filecmd(int argc, char **argv)
 	char *end;
 	int error, ret;
 	int i, ch, Tflag, qflag;
+	size_t lines;
+	char liness[10];
 
 	Tflag = -1;
 	qflag = 0;
@@ -769,6 +780,8 @@ mapfile_cat_filecmd(int argc, char **argv)
 		errx(EX_USAGE, "%s", usage);
 
 	ret = 0;
+	lines = 0;
+	setvarsafe("_mapfile_cat_file_lines_read", "0", 0);
 	for (i = 0; i < argc; i++) {
 		file = argv[i];
 		INTOFF;
@@ -780,13 +793,16 @@ mapfile_cat_filecmd(int argc, char **argv)
 			continue;
 		}
 		assert(md != NULL);
-		if ((error = _mapfile_cat(md, Tflag)) != 0) {
+		lines = 0;
+		if ((error = _mapfile_cat(md, Tflag, &lines)) != 0) {
 			ret = error;
 		}
 		assert(is_int_on());
 		md_close(md);
 		INTON;
 	}
+	snprintf(liness, sizeof(liness), "%zd", lines);
+	setvarsafe("_mapfile_cat_file_lines_read", liness, 0);
 	return (ret);
 }
 
@@ -973,7 +989,9 @@ _mapfile_write(/*XXX const*/ struct mapped_data *md, const char *handle,
 	}
 	if (Tflag) {
 		outbin(data, datalen, out1);
-		out1c('\n');
+		if (!nflag) {
+			out1c('\n');
+		}
 	}
 	return (ret);
 }
@@ -985,7 +1003,7 @@ mapfile_writecmd(int argc, char **argv)
 {
 	struct mapped_data *md;
 	const char *handle, *data;
-	int ch, nflag, Tflag, ret;
+	int ch, error, nflag, Tflag, ret;
 
 	static const char usage[] = "Usage: mapfile_write <handle> [-nT] "
 		    "<data>";
@@ -1010,9 +1028,35 @@ mapfile_writecmd(int argc, char **argv)
 	argv += optind;
 	INTOFF;
 	md = md_find(handle);
-	if (argc == 1) {
-		data = argv[0];
-		ret = _mapfile_write(md, handle, nflag, Tflag, data, -1);
+	if (argc > 0) {
+		ret=0;
+		for (int i = 0; i < argc; i++) {
+			if (i > 0) {
+				if (ifsset()) {
+					data = ifsval();
+				} else {
+					data = " ";
+				}
+				error = _mapfile_write(md, handle, 1,
+				    0, data, 1);
+				if (error != 0) {
+					ret = error;
+					break;
+				}
+				if (Tflag) {
+					out1c(data[0]);
+				}
+			}
+			data = argv[i];
+			error = _mapfile_write(md, handle,
+			    i == argc - 1 ? nflag : 1,
+			    Tflag, data,
+			    strlen(data));
+			if (error != 0) {
+				ret = error;
+				break;
+			}
+		}
 		assert(is_int_on());
 	} else {
 		char *line;

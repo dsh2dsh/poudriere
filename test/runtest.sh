@@ -1,4 +1,5 @@
 : "${TIMEOUT_BIN:=timeout}"
+: "${TIMEOUT_FOREGROUND=--foreground}"
 
 THIS_JOB=0
 make_returnjob() {
@@ -81,6 +82,8 @@ make_getjob() {
 	dd_stderr="$(mktemp -ut runtest)"
 	while :; do
 		timeout=
+		# checkzombies() needed for poudriere sh
+		jobs >/dev/null
 		if [ "${THIS_JOB}" -eq 0 ] ||
 		    ! kill -0 "${THIS_JOB}" 2>/dev/null ||
 		    pwait -o -t "0.1" "${THIS_JOB}" >/dev/null 2>&1; then
@@ -93,13 +96,15 @@ make_getjob() {
 			setvar "${job_outvar}" "${mg_job}"
 			return 0
 		elif [ "${THIS_JOB}" -ne 0 ]; then
-			timeout="${TIMEOUT_BIN:?} --preserve-status -s SIGALRM 2"
+			timeout="${TIMEOUT_BIN:?} --foreground --preserve-status -s SIGALRM 2"
 		fi
 		# There is a race with checking for "this" job above and waiting
 		# on the job server for a job. 142 below will recheck for "this"
 		# job on timeout.
-		mg_job="$(${timeout} \
-			  dd if="${JOB_PIPE_R}" bs=1 count=1 2>"${dd_stderr}")"
+		mg_job="$({
+			${timeout} \
+			    dd if="${JOB_PIPE_R}" bs=1 count=1 2>"${dd_stderr}"
+		})"
 		ret="$?"
 		read dd_err < "${dd_stderr}" || dd_err=
 		rm -f "${dd_stderr}"
@@ -152,17 +157,20 @@ while read var; do
 	am_pkgdatadir|\
 	am_VPATH|\
 	am_check|am_installcheck|\
+	AM_TESTS_FD_STDERR|\
 	MAKEFLAGS|\
 	CCACHE*|\
 	PATH|\
 	PWD|\
 	TIMEOUT|\
-	KEEP_OLD_PACKAGES_COUNT|KEEP_LOGS_COUNT|\
+	KEEP_OLD_PACKAGES_COUNT|KEEP_LOGS_COUNT|LOGCLEAN_WAIT|\
 	PARALLEL_JOBS|\
 	TEST_NUMS|ASSERT_CONTINUE|TEST_CONTEXTS_PARALLEL|\
 	URL_BASE|\
 	PVERBOSE|VERBOSE|\
 	SH_DISABLE_VFORK|TIMESTAMP|TRUSS|TIMEOUT_BIN|\
+	TIMEOUT_KILL_TIMEOUT|TIMEOUT_TRUSS_MULTIPLIER|TIMEOUT_KILL_SIGNAL|\
+	TIMEOUT_SH_MULTIPLIER|\
 	HTML_JSON_UPDATE_INTERVAL|\
 	TESTS_SKIP_BUILD|\
 	TESTS_SKIP_LONG|\
@@ -222,38 +230,53 @@ BUILD_DIR="${PWD}"
 THISDIR=${am_VPATH}
 THISDIR="$(realpath "${THISDIR}")"
 cd "${THISDIR}"
+: "${LOGCLEAN_WAIT:=30}"
+export LOGCLEAN_WAIT
 
-case "${1##*/}" in
-prep.sh) : ${TIMEOUT:=1800} ;;
-bulk*build*.sh|testport*build*.sh) : ${TIMEOUT:=1800} ;;
+case "${TEST##*/}" in
+prep.sh) : "${TIMEOUT:=250}" ;;
+*-build-quick*.sh) : "${TIMEOUT:=120}" ;;
+bulk*build*.sh|testport*build*.sh) : "${TIMEOUT:=400}" ;;
+critical_section_inherit.sh) : "${TIMEOUT:=20}" ;;
+esac
+: "${TIMEOUT:=60}"
+case "${TEST##*/}" in
 # Bump anything touching logclean
-bulk*.sh|testport*.sh|distclean*.sh|options*.sh) : ${TIMEOUT:=500} ;;
-critical_section_inherit.sh) : ${TIMEOUT:=20} ;;
-locked_mkdir.sh) : ${TIMEOUT:=120} ;;
-jobs.sh) : ${TIMEOUT:=300} ;;
+bulk*.sh|testport*.sh|distclean*.sh|options*.sh) : "${TIMEOUT:=$((TIMEOUT + (LOGCLEAN_WAIT * 1)))}" ;;
 esac
-: ${TIMEOUT:=90}
+: "${TIMEOUT_KILL_TIMEOUT=30}"
+: "${TIMEOUT_TRUSS_MULTIPLIER:=6}"
 case "${TRUSS-}" in
-"") ;;
-*) TIMEOUT=$((TIMEOUT * 3)) ;;
+"")
+	;;
+*)
+	TIMEOUT="$((TIMEOUT * TIMEOUT_TRUSS_MULTIPLIER))"
+	TIMEOUT_KILL_TIMEOUT="${TIMEOUT_KILL_TIMEOUT:-$((TIMEOUT_KILL_TIMEOUT * TIMEOUT_TRUSS_MULTIPLIER))}"
+	;;
 esac
-TIMEOUT_KILL="-k 30"
+TIMEOUT_KILL="${TIMEOUT_KILL_TIMEOUT:+-k ${TIMEOUT_KILL_TIMEOUT}}"
+TIMEOUT_KILL="${TIMEOUT_KILL:+${TIMEOUT_KILL} }${TIMEOUT_KILL_SIGNAL:+-s ${TIMEOUT_KILL_SIGNAL} }"
+case "${SH}" in
+/bin/sh)
+	# It's about 4.6 times slower.
+	: "${TIMEOUT_SH_MULTIPLIER:=5}"
+	TIMEOUT="$((TIMEOUT * TIMEOUT_SH_MULTIPLIER))"
+	;;
+esac
 if [ -n "${TESTS_SKIP_BUILD-}" ]; then
-	case "${1##*/}" in
+	case "${TEST##*/}" in
+	*-build-quick*.sh) ;;
 	*-build*)
 		exit 77
 		;;
 	esac
 fi
 if [ -n "${TESTS_SKIP_LONG-}" ]; then
-	case "${1##*/}" in
-	jobs.sh)
-		exit 77
-		;;
-	esac
+	:
 fi
 if [ -n "${TESTS_SKIP_BULK-}" ]; then
-	case "${1##*/}" in
+	case "${TEST##*/}" in
+	*-build-quick*.sh) ;;
 	testport-*.sh|bulk-*.sh)
 		exit 77
 		;;
@@ -281,34 +304,72 @@ runtest() {
 
 	unset MAKEFLAGS
 	export TEST_NUMS
-	# With truss use --foreground to prevent process reaper and ptrace deadlocking.
 	set -x
 	case "${TRUSS-}" in
 	"") ;;
 	*)
-		# Let truss finish draining when receiving a signal.
-		# Only do this for truss as otherwise some tests will not
-		# be able to modify the signals for their own purposes.
-		trap '' INT PIPE TERM HUP
+		# With truss use --foreground to prevent process reaper and
+		# ptrace deadlocking.
+		TIMEOUT_FOREGROUND="--foreground"
 		;;
 	esac
+	setproctitle "poudriere runtest: $(get_log_name)"
 	{
 		TEST_START="$(clock -monotonic)"
 		echo "Test started: $(date)"
 		# hide set -x
 	} >&2 2>/dev/null
-	${TIMEOUT_BIN:?} -v ${TRUSS:+--foreground} ${TIMEOUT_KILL} ${TIMEOUT} \
+	${TIMEOUT_BIN:?} -v ${TIMEOUT_FOREGROUND} ${TIMEOUT_KILL} ${TIMEOUT} \
 	    ${TIMESTAMP} \
 	    env \
 	    ${SH_DISABLE_VFORK:+SH_DISABLE_VFORK=1} \
 	    THISDIR="${THISDIR}" \
 	    SH="${SH}" \
-	    lockf -k "$(get_log_name).lock" \
-	    ${TRUSS:+truss -ae -f -s512 -o "$(get_log_name).truss"} \
+	    lockf ${TIMEOUT_FOREGROUND:+-T} -t 0 -k "$(get_log_name).lock" \
+	    ${TRUSS:+truss -ae -f -s256 -o "$(get_log_name).truss"} \
 	    "${SH}" "${TEST}" || ret="$?"
 	{
+		# "Error: (pid) cmd" is an sh command error.
+		# "Error: [pid] ..." is err().
+		if [ "${ret}" -eq 0 ]; then
+			case "${TEST##*/}" in
+			bulk-bad-dep-pkgname.sh|\
+			bulk-build-specific-bad-flavor.sh|\
+			bulk-flavor-nonexistent.sh|\
+			bulk-flavor-specific-dep-and-specific-listed-nonexistent.sh|\
+			bulk-flavor-specific-dep-nonexistent.sh|\
+			distclean-badorigin.sh|\
+			options-badorigin.sh|\
+			testport-all-flavors-failure.sh|\
+			testport-default-all-flavors-failure.sh|\
+			testport-specific-bad-flavor-failure.sh|\
+			err_catch.sh|\
+			"END") ;;
+			*)
+				echo -n "Checking for unhandled errors... "
+				if egrep -q \
+				    ' Error: (\([0-9]+\) [a-zA-Z0-9]*|\[[0-9]+\])' \
+				    "$(get_log_name)" |
+				    grep -v 'sleep:.*about.*second' |
+				    grep -v 'Another logclean is busy'; then
+					ret=99
+					echo "UNHANDLED ERROR DETECTED"
+				else
+					echo " done"
+				fi
+				;;
+			esac
+		fi
 		TEST_END="$(clock -monotonic)"
 		echo "Test ended: $(date) -- duration: $((TEST_END - TEST_START))s"
+		echo "Log: $(get_log_name)"
+		echo "Test: ${TEST}"
+		case "${TRUSS:+set}" in
+		set)
+			echo "Truss: $(get_log_name).truss"
+			;;
+		esac
+		times
 		# hide set -x
 	} >&2 2>/dev/null
 	case "${make_job:+set}" in
@@ -319,9 +380,98 @@ runtest() {
 	return "${ret}"
 }
 
+_wait() {
+	[ "$#" -ge 0 ] || eargs _wait '[%job|pid...]'
+	local wret ret pid
+
+	if [ "$#" -eq 0 ]; then
+		return 0
+	fi
+
+	ret=0
+	for pid in "$@"; do
+		while :; do
+			wret=0
+			wait "${pid}" || wret="$?"
+			case "${wret}" in
+			157) # SIGINFO [EINTR]
+				continue
+				;;
+			0) ;;
+			*) ret="${wret}" ;;
+			esac
+			# msg_dev "Job ${pid} collected ret=${wret}"
+			break
+		done
+	done
+
+	return "${ret}"
+}
+
+case "$(type pwait)" in
+"pwait is a shell builtin")
+	PWAIT_BUILTIN=1
+	;;
+esac
+# Wrapper to fix SIGINFO [EINTR], -t 0, and ssert on errors.
+pwait() {
+	[ "$#" -ge 1 ] || eargs pwait '[pwait flags]' pids
+	local OPTIND=1 flag
+	local ret oflag tflag timeout time_start now vflag
+
+	tflag=
+	while getopts "ot:v" flag; do
+		case "${flag}" in
+		o) oflag=1 ;;
+		t) tflag="${OPTARG}" ;;
+		v) vflag=1 ;;
+		*) err 1 "pwait: Invalid flag ${flag}" ;;
+		esac
+	done
+	shift $((OPTIND-1))
+
+	[ "$#" -ge 1 ] || eargs pwait '[pwait flags]' pids
+	case "${tflag}" in
+	0) tflag="0.00001" ;;
+	esac
+	case "${tflag}" in
+	"") ;;
+	*.*) timeout="${tflag}" ;;
+	*) time_start="$(clock -monotonic)" ;;
+	esac
+	while :; do
+		# Adjust timeout
+		case "${tflag}" in
+		""|*.*) ;;
+		*)
+			now="$(clock -monotonic)"
+			timeout="$((tflag - (now - time_start)))"
+			case "${timeout}" in
+			"-"*) timeout=0 ;;
+			esac
+			;;
+		esac
+		ret=0
+		command pwait \
+		    ${tflag:+-t "${timeout}"} \
+		    ${vflag:+-v} ${oflag:+-o} \
+		    "$@" || ret="$?"
+		case "${ret}" in
+		# Read again on SIGINFO interrupts
+		157) continue ;;
+		esac
+		break
+	done
+	case "${ret}" in
+	124|0) return "${ret}" ;;
+	esac
+	err "${EX_SOFTWARE:-70}" "pwait: timeout=${timeout} pids=${pids} ret=${ret}"
+}
+
 collectpids() {
 	local timeout="$1"
 	local pids_copy tries max
+	local now start
 
 	case "${pids:+set}" in
 	set) ;;
@@ -337,19 +487,25 @@ collectpids() {
 	*) max="${timeout}" ;;
 	esac
 	tries=0
-	echo "Waiting on pids: ${pids} timeout: ${timeout}" >&2
 	until [ -z "${pids:+set}" ] || [ "${tries}" -eq "${max}" ]; do
+		if [ "${gotinfo}" -eq 1 ]; then
+			echo "+ Waiting on pids: ${pids} timeout: ${timeout}" >&2
+			gotinfo=0
+		fi
 		pwait -o -t "${timeout}" ${pids} >/dev/null 2>&1 || :
 		pids_copy="${pids}"
 		pids=
+		now="$(clock -monotonic)"
 		for pid in ${pids_copy}; do
+			# checkzombies() needed for poudriere sh
+			jobs >/dev/null
 			if kill -0 "${pid}" 2>/dev/null; then
 				pids="${pids:+${pids} }${pid}"
 				continue
 			fi
 			getvar "pid_num_${pid}" pid_test_context_num
 			pret=0
-			wait "${pid}" || pret="$?"
+			_wait "${pid}" || pret="$?"
 			MAIN_RET="$((MAIN_RET + pret))"
 			case "${pret}" in
 			0)
@@ -364,15 +520,19 @@ collectpids() {
 			0) exit_type="PASS" ;;
 			*) exit_type="FAIL" ;;
 			esac
+			getvar "pid_test_start_${pid}" start
 			printf \
-			    "%s TEST_CONTEXT_NUM=%d pid=%-5d exited %-3d - %s: %s\n" \
+			    "%s TEST_NUM=%2d pid=%-5d %4ds exited %-3d - %s: %s\n" \
 			    "${exit_type}" \
 			    "${pid_test_context_num}" \
 			    "${pid}" \
+			    "$((now - start))" \
 			    "${pret}" \
 			    "$(TEST_CONTEXT_NUM="${pid_test_context_num}" get_log_name)" \
 			    "${result}"
 			JOBS="$((JOBS - 1))"
+			TEST_CONTEXTS_FINISHED="$((TEST_CONTEXTS_FINISHED + 1))"
+			set_job_title
 			case "${VERBOSE:+set}.${exit_type}" in
 			set.FAIL)
 				cat "$(TEST_CONTEXT_NUM="${pid_test_context_num}" get_log_name)"
@@ -436,6 +596,13 @@ setvar() {
 }
 fi
 
+if ! type setproctitle >/dev/null 2>&1; then
+setproctitle() {
+	:
+}
+fi
+
+if ! type getvar >/dev/null 2>&1; then
 getvar() {
 	local _getvar_var="$1"
 	local _getvar_var_return="${2-}"
@@ -464,10 +631,13 @@ getvar() {
 
 	return ${ret}
 }
+fi
 
+if ! type getpid >/dev/null 2>&1; then
 getpid() {
 	sh -c 'echo $PPID'
 }
+fi
 
 raise() {
 	local sig="$1"
@@ -475,17 +645,32 @@ raise() {
 	kill -"${sig}" "$(getpid)"
 }
 
+# Need to cleanup some stuff before calling traps.
+_trap_pre_handler() {
+	_ERET="$?"
+	unset IFS
+	set +u
+	set +e
+	trap '' PIPE INT INFO HUP TERM
+}
+# {} is used to avoid set -x SIGPIPE
+alias trap_pre_handler='{ _trap_pre_handler; } 2>/dev/null; (exit "${_ERET}")'
+
 setup_traps() {
-	[ "$#" -eq 1 ] || eargs setup_traps exit_handler
-	local exit_handler="$1"
+	[ "$#" -eq 0 ] || [ "$#" -eq 1 ] || eargs setup_traps '[exit_handler]'
+	local exit_handler="${1-}"
 	local sig
 
 	for sig in INT HUP PIPE TERM; do
-		trap "sig_handler ${sig} ${exit_handler}" "${sig}"
+		trap "trap_pre_handler; sig_handler ${sig}${exit_handler:+ \"${exit_handler}\"}" "${sig}"
 	done
-	trap "${exit_handler}" EXIT
-	# hide set -x
-	trap '{ siginfo_handler; } 2>/dev/null' INFO
+	case "${exit_handler:+set}" in
+	set)
+		trap "trap_pre_handler; ${exit_handler}" EXIT
+		;;
+	esac
+	gotinfo=0
+	trap 'siginfo_handler' INFO
 }
 
 format_siginfo() {
@@ -507,6 +692,7 @@ format_siginfo() {
 }
 
 siginfo_handler() {
+	local -; set +e
 	case "${pids-}" in
 	"") return ;;
 	esac
@@ -520,32 +706,53 @@ siginfo_handler() {
 		duration="$((now - start))"
 		getvar "pid_test_${pid}" test_data
 		printf "pid %05d %3ds %s\n" "${pid}" "${duration}" "${test_data}"
-	done >&4
+	done >&${AM_TESTS_FD_STDERR:-2}
+	gotinfo=1
 }
 
 sig_handler() {
 	local sig="$1"
-	local exit_handler="$2"
+	local exit_handler="${2-}"
 
-	set +e +u
-	unset IFS
-	trap '' PIPE INT INFO HUP TERM
 	trap - EXIT
-	"${exit_handler}"
+	case "${exit_handler:+set}" in
+	set)
+		local sig_ret
+
+		case "${sig}" in
+		TERM) sig_ret=$((128 + 15)) ;;
+		INT)  sig_ret=$((128 + 2)) ;;
+		HUP)  sig_ret=$((128 + 1)) ;;
+		PIPE) sig_ret=$((128 + 13)) ;;
+		*)    sig_ret= ;;
+		esac
+		case "${sig_ret:+set}" in
+		set) (exit "${sig_ret}") ;;
+		esac
+		"${exit_handler}"
+		;;
+	esac
 	trap - "${sig}"
 	raise "${sig}"
 }
 
+set_job_title() {
+	setproctitle "poudriere runtest jobd tests=${TEST_CONTEXTS_FINISHED}/${TEST_CONTEXTS_TOTAL} jobs=${JOBS} elapsed=$(($(clock -monotonic) - TEST_SUITE_START)): $(TEST_CONTEXT_NUM= get_log_name)"
+}
+
+# This is only used if not using make jobserver from ${MAKEFLAGS}
 : ${TEST_CONTEXTS_PARALLEL:=4}
+TEST_CONTEXTS_FINISHED=0
+TEST_SUITE_START="$(clock -monotonic)"
 
 if [ "${TEST_CONTEXTS_PARALLEL}" -gt 1 ] &&
-    grep -q get_test_context "${TEST}"; then
+    egrep -q '(get_test_context|run_test_functions)' "${TEST}"; then
 	{
-		TEST_SUITE_START="$(clock -monotonic)"
 		echo "Test suite started: $(date)"
 		# hide set -x
 	} >&2 2>/dev/null
 	cleanup() {
+		local ret="$?"
 		local jobs
 
 		exec >/dev/null 2>&1
@@ -559,14 +766,21 @@ if [ "${TEST_CONTEXTS_PARALLEL}" -gt 1 ] &&
 			done
 			;;
 		esac
+		exit "${ret}"
 	}
 	setup_traps cleanup
-	TEST_CONTEXTS_TOTAL="$(env \
-	    TEST_CONTEXTS_NUM_CHECK=yes \
-	    THISDIR="${THISDIR}" \
-	    SH="${SH}" \
-	    VERBOSE=0 \
-	    "${SH}" "${TEST}" 2>/dev/null)"
+	exec 9>/dev/null
+	for fd in 9 2; do
+		if TEST_CONTEXTS_TOTAL="$(env \
+		    TEST_CONTEXTS_NUM_CHECK=yes \
+		    THISDIR="${THISDIR}" \
+		    SH="${SH}" \
+		    VERBOSE=0 \
+		    "${SH}" "${TEST}" 2>&"${fd}")"; then
+			break
+		fi
+	done
+	exec 9>&-
 	case "${TEST_CONTEXTS_TOTAL}" in
 	[0-9]|[0-9][0-9]|[0-9][0-9][0-9]|[0-9][0-9][0-9][0-9]) ;;
 	*)
@@ -575,6 +789,7 @@ if [ "${TEST_CONTEXTS_PARALLEL}" -gt 1 ] &&
 		;;
 	esac
 	JOBS=0
+	set_job_title
 	MAIN_RET=0
 	case "${TEST_CONTEXTS_TOTAL}" in
 	[0-9]) num_width="01" ;;
@@ -606,7 +821,7 @@ if [ "${TEST_CONTEXTS_PARALLEL}" -gt 1 ] &&
 				;;
 			esac
 			logname="$(get_log_name)"
-			printf "Logging %s with TEST_CONTEXT_NUM=%${num_width}d/%${num_width}d to %s\n" \
+			printf "Logging %s with TEST_NUM=%${num_width}d/%${num_width}d to %s\n" \
 			    "${TEST}" \
 			    "${TEST_CONTEXT_NUM}" \
 			    "${TEST_CONTEXTS_TOTAL}" \
@@ -626,6 +841,7 @@ if [ "${TEST_CONTEXTS_PARALLEL}" -gt 1 ] &&
 			setvar "pid_test_start_$!" "$(clock -monotonic)"
 			pids="${pids:+${pids} }$!"
 			JOBS="$((JOBS + 1))"
+			set_job_title
 			setvar "pid_num_$!" "${TEST_CONTEXT_NUM}"
 			continue
 		fi
@@ -639,8 +855,8 @@ if [ "${TEST_CONTEXTS_PARALLEL}" -gt 1 ] &&
 	exit "${MAIN_RET}"
 fi
 
-# hide set -x
-trap '{ siginfo_handler; } 2>/dev/null' INFO
+setup_traps
+trap 'siginfo_handler' INFO
 pids="$$"
 setvar "pid_test_start_$$" "$(clock -monotonic)"
 setvar "pid_test_$$" "$(format_siginfo "this" "${TEST}" "1" "1" "$(get_log_name)")"

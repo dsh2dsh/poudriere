@@ -3,7 +3,8 @@ MOSTLYCLEANFILES+=	$(TEST_LOGS:.log=.log.truss)
 MOSTLYCLEANFILES+=	$(TEST_LOGS:.log=*.log)
 MOSTLYCLEANFILES+=	prep.sh.trs prep.sh.log
 
-AM_TESTS_FD_REDIRECT= 4>&2
+AM_TESTS_FD_STDERR=   4
+AM_TESTS_FD_REDIRECT= $(AM_TESTS_FD_STDERR)>&2
 
 EXTRA_DIST= $(TESTS) \
 	    $(JAIL_TESTS) \
@@ -71,6 +72,7 @@ TESTS=\
 	pkgqueue_build_and_test.sh \
 	pkgqueue_failure_cleanup.sh \
 	pkgqueue_find_all_pool_references.sh \
+	pkgqueue_get_next_race.sh \
 	pkgqueue_mutually_exclusive.sh \
 	pkgqueue_prioritize.sh \
 	pkgqueue_remove_many_pipe.sh \
@@ -141,6 +143,7 @@ JAIL_TESTS= \
 	bulk-build-multiple-eligible-in-queue.sh \
 	bulk-build-origin_has_pkgbase.sh \
 	bulk-build-porttesting.sh \
+	bulk-build-quick-pkg.sh \
 	bulk-build-self-immutable-base-no.sh \
 	bulk-build-self-immutable-base-nullfs.sh \
 	bulk-build-self-immutable-base-schg.sh \
@@ -210,6 +213,8 @@ JAIL_TESTS= \
 	testport-build-default-flavor.sh \
 	testport-build-no-deps.sh \
 	testport-build-porttesting.sh \
+	testport-build-quick-pkg.sh \
+	testport-build-quick-1-dep.sh \
 	testport-build-specific-flavor.sh \
 	testport-build-specific-port.sh \
 	testport-default-all-flavors-failure.sh \
@@ -226,8 +231,10 @@ run_env= env \
 	 am_pkglibexecdir="$(pkglibexecdir)" \
 	 am_pkgdatadir="$(pkgdatadir)" \
 	 am_VPATH="$(VPATH)" \
-	 am_check=1
-LOG_COMPILER=	$(run_env) $(SHELL) $(srcdir)/runtest.sh
+	 am_check=1 \
+	 AM_TESTS_FD_STDERR=$(AM_TESTS_FD_STDERR)
+RUNTEST_SH ?= $(abs_top_builddir)/sh
+LOG_COMPILER=	$(run_env) $(RUNTEST_SH) $(srcdir)/runtest.sh
 
 .PHONY: prep
 prep:
@@ -235,3 +242,5 @@ prep:
 	@$(LOG_COMPILER) $(srcdir)/prep.sh
 #TEST_EXTENSIONS=.sh
 #SH_LOG_COMPILER=$(run_env) $(SHELL) runtest.sh
+
+SH ?= @BUILD_SH@

@@ -45,6 +45,7 @@ _wait() {
 			0) ;;
 			*) ret="${wret}" ;;
 			esac
+			msg_dev "Job ${pid} collected ret=${wret}"
 			break
 		done
 	done
@@ -86,16 +87,17 @@ case "$(type pwait)" in
 	PWAIT_BUILTIN=1
 	;;
 esac
-# Wrapper to fix -t 0 and assert on errors.
+# Wrapper to fix SIGINFO [EINTR], -t 0, and ssert on errors.
 pwait() {
 	[ "$#" -ge 1 ] || eargs pwait '[pwait flags]' pids
 	local OPTIND=1 flag
-	local ret oflag timeout vflag
+	local ret oflag tflag timeout time_start now vflag
 
+	tflag=
 	while getopts "ot:v" flag; do
 		case "${flag}" in
 		o) oflag=1 ;;
-		t) timeout="${OPTARG}" ;;
+		t) tflag="${OPTARG}" ;;
 		v) vflag=1 ;;
 		*) err 1 "pwait: Invalid flag ${flag}" ;;
 		esac
@@ -103,29 +105,59 @@ pwait() {
 	shift $((OPTIND-1))
 
 	[ "$#" -ge 1 ] || eargs pwait '[pwait flags]' pids
-	case "${timeout}" in
-	0) timeout="0.00001" ;;
+	case "${tflag}" in
+	"") ;;
+	*.*) timeout="${tflag}" ;;
+	*) time_start="$(clock -monotonic)" ;;
 	esac
-	ret=0
-	# If pwait is NOT builtin then sh will update its jobs state
-	# which means we may pwait on dead procs unexpectedly. It returns
-	# status==0 but may write to stderr.
-	case "${PWAIT_BUILTIN:-0}" in
-	1)
-		command pwait \
-		    ${timeout:+-t "${timeout}"} ${vflag:+-v} ${oflag:+-o} \
-		    "$@" || ret="$?"
-		;;
-	*)
-		command pwait \
-		    ${timeout:+-t "${timeout}"} ${vflag:+-v} ${oflag:+-o} \
-		    "$@" 2>/dev/null || ret="$?"
-		;;
-	esac
+	while :; do
+		# Adjust timeout
+		case "${tflag}" in
+		""|*.*) ;;
+		*)
+			now="$(clock -monotonic)"
+			timeout="$((tflag - (now - time_start)))"
+			case "${timeout}" in
+			"-"*) timeout=0 ;;
+			esac
+			# Special case for pwait as it does not handle
+			# -t 0 well.
+			case "${timeout}" in
+			0) timeout="0.00001" ;;
+			esac
+			;;
+		esac
+		ret=0
+		# If pwait is NOT builtin then sh will update its jobs state
+		# which means we may pwait on dead procs unexpectedly. It returns
+		# status==0 but may write to stderr.
+		case "${PWAIT_BUILTIN:-0}" in
+		1)
+			# This not returning error assumes that the pid being waited on
+			# is the only pid in the job. Multi-pid jobs may return
+			# ESRCH on stderr.
+			command pwait \
+			    ${tflag:+-t "${timeout}"} \
+			    ${vflag:+-v} ${oflag:+-o} \
+			    "$@" || ret="$?"
+			;;
+		*)
+			command pwait \
+			    ${tflag:+-t "${timeout}"} \
+			    ${vflag:+-v} ${oflag:+-o} \
+			    "$@" 2>/dev/null || ret="$?"
+			;;
+		esac
+		case "${ret}" in
+		# Read again on SIGINFO interrupts
+		157) continue ;;
+		esac
+		break
+	done
 	case "${ret}" in
 	124|0) return "${ret}" ;;
 	esac
-	err "${EX_SOFTWARE}" "pwait: timeout=${timeout} pids=${pids}"
+	err "${EX_SOFTWARE:-70}" "pwait: timeout=${timeout} pids=${pids} ret=${ret}"
 }
 
 kill_and_wait() {
@@ -195,13 +227,6 @@ kill_job() {
 	local timeout="$1"
 	local jobid="$2"
 
-	case "${INJOB-}" in
-	"") ;;
-	1)
-		err "${EX_SOFTWARE-70}" "kill_job: Trying to kill a job from within a job."
-		;;
-	esac
-
 	# kill -TERM
 	# Wait $timeout
 	# kill -KILL
@@ -231,7 +256,12 @@ _kill_job() {
 	ret=0
 	case "${jobid}" in
 	"%"*)
-		pgid="$(jobs -p "${jobid}")"
+		if [ "${VERBOSE:-0}" -gt 2 ]; then
+			# pgid only used in msg_dev calls
+			pgid="$(jobs -p "${jobid}")"
+		else
+			unset pgid
+		fi
 		;;
 	*)
 		pgid="${jobid}"
@@ -253,7 +283,15 @@ _kill_job() {
 			case "${timeout:+set}" in
 			set)
 				msg_dev "Pwait -t ${timeout} on ${status} job=${jobid} pgid=${pgid}"
-				pwait -t "${timeout}" "${pgid}" || ret="$?"
+				case "${jobid}" in
+				"%"*)
+					pwait_jobs -t "${timeout}" "${jobid}" ||
+					    ret="$?"
+					;;
+				*)
+					pwait -t "${timeout}" "${pgid}" || ret="$?"
+					;;
+				esac
 				case "${ret}" in
 				124)
 					# Timeout. Keep going on the
@@ -283,6 +321,11 @@ _kill_job() {
 		esac
 	done
 	msg_dev "Collecting status='${status}' job=${jobid} pgid=${pgid}"
+	# Truncate away pwait timeout for whatever the process exited with
+	# from the spec.
+	case "${ret}" in
+	124) ret=0 ;;
+	esac
 	_wait "${jobid}" || ret="$?"
 	msg_dev "Job ${jobid} pgid=${pgid} exited ${ret}"
 	return "${ret}"
@@ -290,7 +333,7 @@ _kill_job() {
 
 pwait_jobs() {
 	[ "$#" -ge 0 ] || eargs pwait_jobs '[pwait flags]' '%job...'
-	local jobno pids allpids job_status
+	local jobno pid pids allpids job_status
 	local OPTIND=1 flag
 	local oflag timeout vflag
 	local jobs_jobid
@@ -336,8 +379,13 @@ pwait_jobs() {
 			esac
 			pids="$(jobid "${jobno}")" ||
 			    err "${EX_SOFTWARE}" "kill_jobs: jobid"
-			allpids="${allpids:+${allpids} }${pids}"
-		done
+			for pid in ${pids}; do
+				if ! kill -0 "${pid}" 2>&5; then
+					continue
+				fi
+				allpids="${allpids:+${allpids} }${pid}"
+			done
+		done 5>/dev/null
 	done <<-EOF
 	$(jobs_with_statuses "$(jobs)")
 	EOF
@@ -465,7 +513,7 @@ parallel_start() {
 	unlink "${fifo}" || :
 	NBPARALLEL=0
 	PARALLEL_JOBNOS=""
-	: "${PARALLEL_JOBS:="$(sysctl -n hw.ncpu)"}"
+	: "${PARALLEL_JOBS:="$(nproc)"}"
 	_SHOULD_REAP=0
 	delay_pipe_fatal_error
 }
@@ -624,19 +672,21 @@ nohang() {
 
 	# Run the actual command in a child subshell
 	(
-		trap - INT
+		trap 'exit 130' INT
 		local ret=0
 		if [ "${OUTPUT_REDIRECTED:-0}" -eq 1 ]; then
 			exec 3>&- 4>&-
 			unset OUTPUT_REDIRECTED OUTPUT_REDIRECTED_STDERR \
 			    OUTPUT_REDIRECTED_STDOUT
 		fi
-		_spawn_wrapper "$@" || ret=1
+		setproctitle "nohang (${logfile})" || :
+		SUPPRESS_INT=1 _spawn_wrapper "$@" || ret=$?
 		# Notify the pipe the command is done
 		echo "done" >&8 2>/dev/null || :
 		exit "${ret}"
 	) &
 	childpid=$!
+	msg_dev "nohang spawned pid=${childpid} cmd: $*"
 	echo "${childpid}" > "${pidfile}"
 
 	# Now wait on the cmd with a timeout on the log's mtime
@@ -759,7 +809,9 @@ get_job_status() {
 	# appear that this is useless since it execs ps and forces a check.
 	# But without an external fork+exec, or jobs(1) call, the job status
 	# does not update.
-	jobs >/dev/null || :
+	# The $(jobs -l $pid) does not lead to checkzombies() as it runs
+	# through showjob() rather than showjobs()->checkzombies().
+	jobs >/dev/null || err 1 "get_job_status: jobs failed $?"
 	ret=0
 	gjs_output="$(jobs -l "${gjs_pid}")" || ret="$?"
 	case "${gjs_pid}" in
@@ -865,13 +917,16 @@ get_job_id() {
 }
 
 spawn_job() {
-	local - INJOB
+	local -
 
 	set -m
-	INJOB=1
 	spawn_jobid=
 	spawn "$@" || return
-	get_job_id "$!" spawn_jobid
+	get_job_id "$!" spawn_jobid || return
+	spawn_job="%${spawn_jobid}"
+	spawn_pgid="$(jobs -p "${spawn_job:?}")"
+	spawn_pid="$!"
+	msg_dev "spawn_job: Spawned job ${spawn_job:?} pgid=${spawn_pgid:?} pid=${spawn_pid:?} cmd=$*"
 }
 
 spawn_job_protected() {
@@ -976,7 +1031,7 @@ _trap_pre_handler() {
 	esac
 	set +x
 }
-# {} is used to avoid set -x EPIPE
+# {} is used to avoid set -x SIGPIPE
 alias trap_pre_handler='{ _trap_pre_handler; } 2>/dev/null; (exit "${_ERET}")'
 
 sig_handler() {
@@ -1037,6 +1092,7 @@ exit_return() {
 
 	# shellcheck disable=SC2034
 	IN_EXIT_HANDLER=1
+	trap - EXIT
 
 	case "${SHFLAGS-$-}${_trap_x-}${SETX_EXIT:-0}" in
 	*x*1) set -x ;;
@@ -1073,5 +1129,9 @@ setup_traps() {
 		done
 		trap "trap_pre_handler; exit_return" EXIT
 	fi
-	stack_push_front "${TRAPSVAR}" "${exit_handler}"
+	case "${exit_handler:+set}" in
+	set)
+		stack_push_front "${TRAPSVAR}" "${exit_handler}"
+		;;
+	esac
 }

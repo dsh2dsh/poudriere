@@ -1022,10 +1022,14 @@ do_bulk() {
 	_setup_build
 	case "$@" in
 	*-n*)
-		DRY_RUN_PACKAGES_LIST="$(mktemp -ut packages_for_dry_run)"
-		if [ -d "${PACKAGES:?}/All/" ]; then
-			list_package_files
-		fi > "${DRY_RUN_PACKAGES_LIST:?}"
+		case "$@" in
+		*-c*) ;;
+		*)
+			DRY_RUN_PACKAGES_LIST="$(mktemp -ut packages_for_dry_run)"
+			if [ -d "${PACKAGES:?}/All/" ]; then
+				list_package_files
+			fi > "${DRY_RUN_PACKAGES_LIST:?}"
+		esac
 		;;
 	esac
 	do_poudriere bulk \
@@ -1066,9 +1070,14 @@ do_options() {
 
 do_pkgclean() {
 	_setup_overlays
-	# pkg is needed for pkgclean
-	do_bulk ports-mgmt/pkg
-	assert 0 "$?" "bulk for pkg should pass"
+	case "$@" in
+	*-A*) ;;
+	*)
+		# pkg is needed for pkgclean if not removing all.
+		do_bulk ports-mgmt/pkg
+		assert 0 "$?" "bulk for pkg should pass"
+		;;
+	esac
 	do_poudriere pkgclean \
 	    ${REAL_OVERLAYS:+$(echo "${REAL_OVERLAYS}" | tr ' ' '\n' | sed -e 's,^,-O ,' | paste -d ' ' -s -)} \
 	    ${JFLAG:+-J ${JFLAG}} \
@@ -1193,11 +1202,15 @@ _assert_bulk_dry_run() {
 	    "Logdir '${log:?}/logs/ignored' should be empty"
 
 	# Packages should be untouched.
-	tmp="$(mktemp -u)"
-	if [ -d "${PACKAGES:?}/All/" ]; then
-		list_package_files
-	fi > "${tmp:?}"
-	stack_lineinfo assert_file "${tmp}" "${DRY_RUN_PACKAGES_LIST:?}"
+	case "${DRY_RUN_PACKAGES_LIST:+set}" in
+	set)
+		tmp="$(mktemp -u)"
+		if [ -d "${PACKAGES:?}/All/" ]; then
+			list_package_files
+		fi > "${tmp:?}"
+		stack_lineinfo assert_file "${tmp}" "${DRY_RUN_PACKAGES_LIST:?}"
+		;;
+	esac
 	# No .building dir should be left behind
 	assert_false [ -d "${PACKAGES:?}/.building" ]
 }
@@ -1527,7 +1540,7 @@ if [ -n "${JAILMNT}" ] && [ -z "${TEST_CONTEXTS_NUM_CHECK-}" ]; then
 		;;
 	esac
 fi
-if [ -z "${JAILMNT}" ]; then
+if [ -z "${JAILMNT}" ] && [ -z "${TEST_CONTEXTS_NUM_CHECK-}" ]; then
 	if [ ${BOOTSTRAP_ONLY:-0} -eq 0 ]; then
 		echo "ERROR: Must run prep.sh" >&2
 		exit 99
@@ -1621,18 +1634,26 @@ set_make_conf() {
 set_make_conf <<-EOF
 EOF
 
-{
+do_logclean() {
 	echo -n "Pruning stale jails..."
 	${SUDO} ${POUDRIEREPATH} -e ${POUDRIERE_ETC} jail -k \
 	    -j "${JAILNAME}" -p "${PTNAME}" ${SETNAME:+-z "${SETNAME}"} \
 	    >/dev/null || :
 	echo " done"
 	echo -n "Pruning previous logs..."
+	log_ret=0
 	${SUDO} ${POUDRIEREPATH} -e ${POUDRIERE_ETC} logclean \
 	    -j "${JAILNAME}" -p "${PTNAME}" ${SETNAME:+-z "${SETNAME}"} \
-	    -y -N ${KEEP_LOGS_COUNT-10} -w ${LOGCLEAN_WAIT-60} >/dev/null || :
+	    -y -N ${KEEP_LOGS_COUNT-10} -w ${LOGCLEAN_WAIT-30} || log_ret="$?"
+	case "${log_ret}" in
+	0|124) ;;
+	*) err 99 "logclean failure ret=${log_ret}" ;;
+	esac
 	echo " done"
-} >&${REDIRECTED_STDERR_FD:-2}
+}
+if [ -z "${TEST_CONTEXTS_NUM_CHECK-}" ]; then
+	do_logclean >&${REDIRECTED_STDERR_FD:-2}
+fi
 
 # Import local ports tree
 pset "${PTNAME}" mnt "${PTMNT}"

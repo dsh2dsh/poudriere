@@ -73,21 +73,36 @@ pkgqueue_get_next() {
 	[ "$#" -eq 2 ] || eargs pkgqueue_get_next job_type_var pkgname_var
 	local pgn_job_type_var="$1"
 	local pgn_pkgname_var="$2"
-	local pgn_job_type pkgq_dir pgn_pkgname __pkgqueue_job ret
+	local pgn_job_type pkgq_dir pgn_pkgname __pkgqueue_job ret recheck_empty
 
 	# May need to try multiple times due to races and queued-for-order jobs
+	recheck_empty=0
 	while :; do
 		pkgq_dir="$(find ${POOL_BUCKET_DIRS:?} \
 		    -ignore_readdir_race \
 		    -type d -depth 1 -empty -print -quit || :)"
-		# No more eligible work!
+		# Check twice that the queue is empty. This avoids racing with
+		# pkgqueue_clean_queue() and pkgqueue_balance_pool() moving files
+		# between the dirs; find does not have an atomic view of
+		# POOL_BUCKET_DIRS.
 		case "${pkgq_dir}" in
 		"")
+			case "${recheck_empty}" in
+			0)
+				recheck_empty=1
+				continue
+				;;
+			esac
+			# No current eligible work.
+			# This does not mean the queue is empty, only that
+			# the ready-to-build is empty. Some jobs may still
+			# be running.
 			pgn_job_type=
 			pgn_pkgname=
 			break
 			;;
 		esac
+		recheck_empty=0
 		ret=0
 		_pkgqueue_job_start "${pkgq_dir}" || ret="$?"
 		case "${ret}" in
@@ -182,7 +197,7 @@ _pkgqueue_job_start() {
 	pkgqueue_job_decode "${pkgqueue_job}" job_type job_name
 	# We may race with pkgqueue_balance_pool()
 	running_dir="${MASTER_DATADIR:?}/running/${pkgqueue_job:?}"
-	if ! rename "${pkgq_dir}" "${running_dir}" 2>/dev/null; then
+	if ! rename -q "${pkgq_dir}" "${running_dir}"; then
 		# Was the failure from /unbalanced?
 		case "${pkgq_dir}" in
 		"unbalanced/"*)
@@ -335,7 +350,7 @@ pkgqueue_clean_rdeps() {
 	# pkgqueue_clean_queue() owns it or there were no reverse
 	# deps for this package.
 	pkgqueue_dir rdep_dir_name "${pkgqueue_job}"
-	rename "rdeps/${rdep_dir_name}" "${rdep_dir}" 2>/dev/null ||
+	rename -q "rdeps/${rdep_dir_name}" "${rdep_dir}" ||
 	    return 0
 
 	# Cleanup everything that depends on my package
@@ -412,7 +427,7 @@ pkgqueue_clean_deps() {
 	# Exclusively claim the deps dir or return, another
 	# pkgqueue_clean_queue() owns it.
 	pkgqueue_dir pkg_dir_name "${pkgqueue_job}"
-	rename "deps/${pkg_dir_name}" "${dep_dir}" 2>/dev/null ||
+	rename -q "deps/${pkg_dir_name}" "${dep_dir}" ||
 	    return 0
 
 	# Remove myself from all my dependency rdeps to prevent them from
@@ -465,7 +480,8 @@ _pkgqueue_clean_queue() {
 	return "${ret}"
 }
 
-# This is expected to run from the child build process.
+# This is expected to run from the child build process, or main for
+# cleaning up after a crashed build.
 pkgqueue_clean_queue() {
 	[ "$#" -eq 3 ] || eargs pkgqueue_clean_queue job_type job_name clean_rdepends
 	local job_type="$1"
@@ -524,43 +540,73 @@ pkgqueue_prioritize() {
 
 pkgqueue_balance_pool() {
 	required_env pkgqueue_balance_pool PWD "${MASTER_DATADIR_ABS:?}"
-	local pkgq_dir pkgqueue_job dep_count lock
+	local pkgq_dir pkgqueue_job dep_count
 
 	# Avoid running this in parallel, no need. Note that this lock is
 	# not on the unbalanced/ dir, but only this function.
 	# pkgqueue_clean_queue() writes to unbalanced/, pkgqueue_empty() reads
 	# from it, and pkgqueue_get_next() moves from it.
-	lock=.lock-pkgqueue_balance_pool
-	mkdir "${lock}" 2>/dev/null || return 0
-
-	if dirempty pool/unbalanced; then
-		rmdir "${lock}"
+	if ! lock_acquire -q pkgqueue_balance_pool 0; then
 		return 0
 	fi
 
+	if dirempty pool/unbalanced; then
+		lock_release pkgqueue_balance_pool
+		return 0
+	fi
+
+	if ! cd pool; then
+		lock_release pkgqueue_balance_pool
+		msg_error "pkgqueue_balance_pool: cd pool"
+		return 1
+	fi
 	# For everything ready-to-run...
-	for pkgq_dir in pool/unbalanced/*; do
+	for pkgq_dir in unbalanced/*; do
 		# May be empty due to racing with pkgqueue_get_next()
 		case "${pkgq_dir}" in
-		"pool/unbalanced/*") break ;;
+		"unbalanced/*") break ;;
 		esac
 		pkgqueue_job="${pkgq_dir##*/}"
 		hash_remove "pkgqueue_priority" "${pkgqueue_job}" dep_count ||
 		    dep_count=0
 		# This races with pkgqueue_get_next(), just ignore failure
 		# to move it.
-		rename "${pkgq_dir}" "pool/${dep_count}/${pkgqueue_job}" || :
-	done 2>/dev/null
+		rename -q "${pkgq_dir}" "${dep_count}/${pkgqueue_job}" || :
+	done
 	# New files may have been added in unbalanced/ via
 	# pkgqueue_clean_queue() due to not being locked.
 	# These will be picked up in the next run.
-	rmdir "${lock}"
+	lock_release pkgqueue_balance_pool
+	cd ..
 }
 
 # Create a pool of ready-to-run from the deps pool
 pkgqueue_move_ready_to_pool() {
 	required_env pkgqueue_move_ready_to_pool PWD "${MASTER_DATADIR_ABS:?}"
 	[ $# -eq 0 ] || eargs pkgqueue_move_ready_to_pool
+
+	case "${POOL_BUCKET_DIRS:+set}" in
+	# Tests may run this again.
+	set) ;;
+	*)
+		_pkgqueue_create_pool_dirs ||
+		     err 1 "pkgqueue_move_ready_to_pool: failed to create pool dirs"
+		;;
+	esac
+	find deps -type d -depth 2 -empty |
+	    xargs -J % mv % pool/unbalanced
+	# Test hack
+	case "${TEST_PMRTP_SKIP_BALANCE_POOL:+set}" in
+	set) ;;
+	*)
+		pkgqueue_balance_pool || return
+		;;
+	esac
+}
+
+_pkgqueue_create_pool_dirs() {
+	required_env _pkgqueue_create_pool_dirs PWD "${MASTER_DATADIR_ABS:?}"
+	[ $# -eq 0 ] || eargs _pkgqueue_create_pool_dirs
 
 	# Create buckets to satisfy the dependency chain priorities.
 	case "${PKGQUEUE_PRIORITIES:+set}" in
@@ -581,17 +627,13 @@ pkgqueue_move_ready_to_pool() {
 	# Create buckets after loading priorities in case of boosts.
 	(
 		if cd "${MASTER_DATADIR:?}/pool"; then
-			mkdir ${POOL_BUCKET_DIRS:?}
+			mkdir ${POOL_BUCKET_DIRS:?} || return
 		fi
-	)
+	) || return
 
 	# unbalanced is where everything starts at.  Items are moved in
 	# pkgqueue_balance_pool based on their priority.
 	POOL_BUCKET_DIRS="${POOL_BUCKET_DIRS:?} unbalanced"
-
-	find deps -type d -depth 2 -empty |
-	    xargs -J % mv % pool/unbalanced
-	pkgqueue_balance_pool
 }
 
 pkgqueue_remove_many_pipe() {
@@ -777,13 +819,13 @@ pkgqueue_empty() {
 	# Check twice that the queue is empty. This avoids racing with
 	# pkgqueue_clean_queue() and pkgqueue_balance_pool() moving files
 	# between the dirs.
-	while [ ${n} -lt 2 ]; do
+	while [ "${n}" -lt 2 ]; do
 		for pool_dir in ${dirs}; do
-			if ! dirempty ${pool_dir}; then
+			if ! dirempty "${pool_dir}"; then
 				return 1
 			fi
 		done
-		n=$((n + 1))
+		n="$((n + 1))"
 	done
 
 	# Queue is empty
@@ -816,12 +858,13 @@ pkgqueue_list_deps_recurse() {
 	pkgqueue_dir pkg_dir_name "${pkgqueue_job}"
 	# Show deps/*/${pkgname}
 	for pn in deps/"${pkg_dir_name}"/*; do
+		case "${pn}" in
+		# empty dir
+		"deps/${pkg_dir_name}/*") break ;;
+		esac
 		dep_pkgqueue_job="${pn##*/}"
 		case " ${FIND_ALL_DEPS} " in
-			*" ${dep_pkgqueue_job} "*) continue ;;
-		esac
-		case "${pn}" in
-		"deps/${pkg_dir_name}/*") break ;;
+		*" ${dep_pkgqueue_job} "*) continue ;;
 		esac
 		pkgqueue_job_decode "${dep_pkgqueue_job}" dep_job_type \
 		    dep_pkgname
@@ -836,9 +879,9 @@ pkgqueue_find_dead_packages() {
 	[ $# -eq 0 ] || eargs pkgqueue_find_dead_packages
 	local dead_all dead_deps dead_top
 
-	dead_all=$(mktemp -t dead_packages.all)
-	dead_deps=$(mktemp -t dead_packages.deps)
-	dead_top=$(mktemp -t dead_packages.top)
+	dead_all="$(mktemp -t dead_packages.all)"
+	dead_deps="$(mktemp -t dead_packages.deps)"
+	dead_top="$(mktemp -t dead_packages.top)"
 	find deps -mindepth 2 > "${dead_all}"
 	# All packages in the queue
 	cut -d / -f 3 "${dead_all}" | sort -u -o "${dead_top}"

@@ -5,48 +5,6 @@ set +e
 READY_FILE="channel"
 EXIT_FILE="exit_file"
 
-cond_timedwait() {
-	local maxtime="$1"
-	local which="$2"
-	local reason="${3-}"
-	local start now got_reason
-
-	start="$(clock -monotonic)"
-	until [ -e "${READY_FILE:?}.${which:?}" ]; do
-		sleep 0.001
-		now="$(clock -monotonic)"
-		if [ "$((now - start))" -gt "${maxtime}" ]; then
-			msg_error "cond_timedwait: Timeout waiting for signal which='${which}' reason='${reason}'"
-			return 1
-		fi
-	done
-	got_reason=
-	read got_reason < "${READY_FILE:?}.${which:?}"
-	echo "${which:?} sent signal: ${got_reason}" >&2
-	assert "${reason}" "${got_reason}" "READY FILE reason"
-	rm -f "${READY_FILE:?}.${which:?}"
-}
-
-cond_signal() {
-	local which="$1"
-	local reason="${2-}"
-
-	case "${reason:+set}" in
-	set)
-		# Likely noclobber failure if this fails.
-		# Using 'noclobber' to make log clearer.
-		assert_true noclobber \
-		    write_atomic "${READY_FILE:?}.${which:?}" "${reason}"
-		;;
-	*)
-		local -
-
-		set -C # noclobber
-		: > "${READY_FILE:?}.${which:?}" || return
-		;;
-	esac
-}
-
 # Basic test: should return 143 from handler
 {
 	worker_cleanup() {
@@ -167,12 +125,12 @@ cond_signal() {
 	EOF
 }
 
-# Should NOT exit EPIPE from handler
+# Should NOT exit SIGPIPE from handler
 {
 	worker_cleanup() {
 		local ret=$?
-		assert 0 "${ret}" "worker had error before entering worker_cleanup; should not EPIPE until here" 2>&4
-		# Cause an EPIPE here to ensure it does not recurse
+		assert 0 "${ret}" "worker had error before entering worker_cleanup; should not SIGPIPE until here" 2>&4
+		# Cause an SIGPIPE here to ensure it does not recurse
 		pipe_ret=0
 		echo "in here $ret" >&2 || pipe_ret=$?
 		assert 2 "${pipe_ret}" "stderr should cause write error" 2>&4
@@ -190,8 +148,8 @@ cond_signal() {
 		ret=0
 		echo "FIFO should work" >&2 || ret=$?
 		assert 0 "$ret" "echo to stderr" 2>&4
-		# We should now EPIPE if writing to stderr.
-		# The process will only EPIPE in worker_cleanup()
+		# We should now SIGPIPE if writing to stderr.
+		# The process will only SIGPIPE in worker_cleanup()
 		{
 			assert_true cond_signal child "piped stderr"
 			assert_true cond_timedwait 5 parent
@@ -225,12 +183,12 @@ cond_signal() {
 	# Nuke stderr reader
 	assert_ret 0 timed_wait_and_kill_job 5 "%${stderr_jobid}"
 	# This serializes some of the test to ensure proper setup of set -x
-	# for the EPIPE test.
+	# for the SIGPIPE test.
 	assert_true cond_signal parent
 	assert_true cond_timedwait 5 child "worker end"
 	assert_true cond_signal parent
 	assert_true cond_timedwait 5 child "exiting"
-	# No EPIPE should come through from exit handler
+	# No SIGPIPE should come through from exit handler
 	assert_ret 0 kill_job 2 "%${writer_jobid}"
 	exec 4>&-
 	assert_file - "${EXIT_FILE}" <<-EOF

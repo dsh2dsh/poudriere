@@ -45,7 +45,7 @@ aecho() {
 	local lineinfo="${TEST_CONTEXT:+"{${TEST_CONTEXT_PROGRESS} ${TEST_CONTEXT}} "}${2}"
 
 	case "${result}" in
-	TEST)
+	TEST*)
 		shift 2
 		msg_assert_dev "$(printf "%d> ${COLOR_LINEINFO-}%-4s${COLOR_RESET-} ${COLOR_ASSERT_TEST-}%s${COLOR_RESET-}: %s\n" \
 		    "$(getpid)" "${lineinfo}" "${result}" "$*")"
@@ -96,6 +96,48 @@ _assert_failure() {
 }
 alias assert_failure='_assert_failure; return'
 
+_assert_compare() {
+	local -; set +x +e +u
+	[ $# -ge 4 ] || eargs _assert_compare lineinfo test_op expected actual
+	local lineinfo="$1"
+	local test_op="$2"
+	local expected="$3"
+	local actual="$4"
+	local test_str
+	shift 4
+
+	# All of the other aechos show expected FIRST so we have to flip
+	# around the comparison for display.
+	# comparison is actual <test_op> expected
+	# string is expected (mirror)<test_op> actual
+	case "${test_op}" in
+	"-le") test_str=">=" ;;
+	"-lt")  test_str=">" ;;
+	"-ge") test_str="<=" ;;
+	"-gt")  test_str="<" ;;
+	*) err 1 "invalid test_op=${test_op}" ;;
+	esac
+
+	aecho TEST "${lineinfo}" "'${expected}' ${test_str} '${actual}'"
+	if [ "${actual}" ${test_op} "${expected}" ]; then
+		:
+	else
+		aecho FAIL "${lineinfo}" "${expected}" "${actual}" "$@"
+		assert_failure
+	fi
+	aecho OK "${lineinfo}" #"${msg}: expected: '${expected}', actual: '${actual}'"
+}
+# This function may be called in "$@" contexts that do not use eval.
+assert_le() { _assert_compare "${lineinfo-}" "-le" "$@"; }
+alias assert_le="_assert_compare \"${_LINEINFO_DATA:?}\" \"-le\" "
+assert_lt() { _assert_compare "${lineinfo-}" "-lt" "$@"; }
+alias assert_lt="_assert_compare \"${_LINEINFO_DATA:?}\" \"-lt\" "
+assert_ge() { _assert_compare "${lineinfo-}" "-ge" "$@"; }
+alias assert_ge="_assert_compare \"${_LINEINFO_DATA:?}\" \"-ge\" "
+assert_gt() { _assert_compare "${lineinfo-}" "-gt" "$@"; }
+alias assert_gt="_assert_compare \"${_LINEINFO_DATA:?}\" \"-gt\" "
+
+
 _assert() {
 	local -; set +x +e +u
 	[ $# -ge 3 ] || eargs assert lineinfo expected actual
@@ -115,7 +157,7 @@ _assert() {
 	aecho OK "${lineinfo}" #"${msg}: expected: '${expected}', actual: '${actual}'"
 }
 # This function may be called in "$@" contexts that do not use eval.
-assert() { _assert "" "$@"; }
+assert() { _assert "${lineinfo-}" "$@"; }
 alias assert="_assert \"${_LINEINFO_DATA:?}\" "
 
 _assert_case() {
@@ -141,7 +183,7 @@ _assert_case() {
 	aecho OK "${lineinfo}" #"${msg}: expected: '${expected}', actual: '${actual}'"
 }
 # This function may be called in "$@" contexts that do not use eval.
-assert_case() { _assert_case "" "$@"; }
+assert_case() { _assert_case "${lineinfo-}" "$@"; }
 alias assert_case="_assert_case \"${_LINEINFO_DATA:?}\" "
 
 _assert_not() {
@@ -162,7 +204,7 @@ _assert_not() {
 	aecho OK "${lineinfo}" # "${msg}: notexpected: '${notexpected}', actual: '${actual}'"
 }
 # This function may be called in "$@" contexts that do not use eval.
-assert_not() { _assert_not "" "$@"; }
+assert_not() { _assert_not "${lineinfo-}" "$@"; }
 alias assert_not="_assert_not \"${_LINEINFO_DATA:?}\" "
 
 _assert_list() {
@@ -199,7 +241,7 @@ _assert_list() {
 	aecho OK "${lineinfo}" #"${msg}: expected: '${expected}', actual: '${actual}'"
 }
 # This function may be called in "$@" contexts that do not use eval.
-assert_list() { _assert_list "" "$@"; }
+assert_list() { _assert_list "${lineinfo-}" "$@"; }
 alias assert_list="_assert_list \"${_LINEINFO_DATA:?}\" "
 
 _assert_file_reg() {
@@ -241,7 +283,7 @@ $(cat -nvet "${expected}")"
 	fi
 }
 # This function may be called in "$@" contexts that do not use eval.
-assert_file_reg() { _assert_file_reg "" "$@"; }
+assert_file_reg() { _assert_file_reg "${lineinfo-}" "$@"; }
 alias assert_file_reg="_assert_file_reg \"${_LINEINFO_DATA:?}\" "
 
 _assert_file() {
@@ -316,16 +358,16 @@ _assert_ret() {
 	local lineinfo="$1"
 	local expected="$2"
 	shift 2
-	local ret
+	local ret reason
 
 	aecho TEST "${lineinfo}" "\$? == ${expected} cmd:" "$*"
 	ret=0
 	"$@" || ret=$?
 	reason="Bad exit status: ${ret} cmd: $*"
-	_assert "${lineinfo}" "${expected}" "${ret}" "Bad exit status: ${ret} cmd: $*${REASON:+ "$'\n'" ${REASON}}"
+	_assert "${lineinfo}" "${expected}" "${ret}" "${reason}${REASON:+ "$'\n'" ${REASON}}"
 }
 # This function may be called in "$@" contexts that do not use eval.
-assert_ret() { _assert_ret "" "$@"; }
+assert_ret() { _assert_ret "${lineinfo-}" "$@"; }
 assert_true() { assert_ret 0 "$@"; }
 alias assert_ret="_assert_ret \"${_LINEINFO_DATA:?}\" "
 alias assert_true='assert_ret 0'
@@ -352,7 +394,7 @@ _assert_ret_not() {
 	_assert_not "${lineinfo}" "${expected}" "${ret}" "Bad exit status: ${ret} cmd: $*"
 }
 # This function may be called in "$@" contexts that do not use eval.
-assert_ret_not() { _assert_ret_not "" "$@"; }
+assert_ret_not() { _assert_ret_not "${lineinfo-}" "$@"; }
 assert_false() { assert_ret_not 0 "$@"; }
 alias assert_ret_not="_assert_ret_not \"${_LINEINFO_DATA:?}\" "
 alias assert_false='assert_ret_not 0'
@@ -431,8 +473,84 @@ _assert_stack() {
 		"${reason} -"$'\n'"Have:     '${val}'"$'\n'"Expected: '${expected}'"
 }
 # This function may be called in "$@" contexts that do not use eval.
-assert_stack() { _assert_stack "" "$@"; }
+assert_stack() { _assert_stack "${lineinfo-}" "$@"; }
 alias assert_stack='stack_lineinfo _assert_stack '
+
+_assert_runs_le() {
+	local -; set +x +e +u
+	[ "$#" -ge 3 ] || eargs assert_runs_le seconds 'cmd ...'
+	local lineinfo="$1"
+	local within="$2"
+	shift 2
+	local ret start now duration reason
+
+	aecho TEST "${lineinfo}" "runs within ${within} seconds cmd: $*"
+	start="$(clock -monotonic)"
+	ret=0
+	"$@" || ret=$?
+	now="$(clock -monotonic)"
+	duration="$((now - start))"
+	if [ "${duration}" -gt "${within}" ]; then
+		reason="Took longer than ${within} seconds. Took ${duration} seconds. cmd: $*"
+	fi
+	aecho TEST_FINISH "${lineinfo}" "ran in ${duration} seconds ret=${ret} cmd: $*"
+	_assert_compare "${lineinfo}" "-le" "${within}" "${duration}" "${reason}${REASON:+ "$'\n'" ${REASON}}"
+}
+# This function may be called in "$@" contexts that do not use eval.
+assert_runs_le() { _assert_runs_le "${lineinfo-}" "$@"; }
+alias assert_runs_le="_assert_runs_le \"${_LINEINFO_DATA:?}\" "
+alias assert_runs_shorter_than='assert_runs_le '
+alias assert_runs_within='assert_runs_shorter_than '
+
+_assert_runs_ge() {
+	local -; set +x +e +u
+	[ "$#" -ge 3 ] || eargs assert_runs_ge seconds 'cmd ...'
+	local lineinfo="$1"
+	local within_ge="$2"
+	shift 2
+	local ret start now duration reason
+
+	aecho TEST "${lineinfo}" "runs at_least ${within_ge} seconds cmd: $*"
+	start="$(clock -monotonic)"
+	ret=0
+	"$@" || ret=$?
+	now="$(clock -monotonic)"
+	duration="$((now - start))"
+	if [ "${duration}" -gt "${within_ge}" ]; then
+		reason="Took shorter than ${within_ge} seconds. Took ${duration} seconds. cmd: $*"
+	fi
+	aecho TEST_FINISH "${lineinfo}" "ran in ${duration} seconds ret=${ret} cmd: $*"
+	_assert_compare "${lineinfo}" "-ge" "${within_ge}" "${duration}" "${reason}${REASON:+ "$'\n'" ${REASON}}"
+}
+# This function may be called in "$@" contexts that do not use eval.
+assert_runs_ge() { _assert_runs_ge "${lineinfo-}" "$@"; }
+alias assert_runs_ge="_assert_runs_ge \"${_LINEINFO_DATA:?}\" "
+alias assert_runs_longer_than='assert_runs_ge '
+
+_assert_runs_between() {
+	local -; set +x +e +u
+	[ "$#" -ge 4 ] || eargs assert_runs_between seconds_start seconds_end 'cmd ...'
+	local lineinfo="$1"
+	local secs_start="$2"
+	local secs_end="$3"
+	shift 3
+	local ret start now duration reason
+
+	aecho TEST "${lineinfo}" "runs between ${secs_start}-${secs_end} seconds cmd: $*"
+	start="$(clock -monotonic)"
+	ret=0
+	"$@" || ret=$?
+	now="$(clock -monotonic)"
+	duration="$((now - start))"
+	aecho TEST_FINISH "${lineinfo}" "ran in ${duration} seconds ret=${ret} cmd: $*"
+	reason="Took shorter than ${secs_start} seconds. Took ${duration} seconds. cmd: $*"
+	_assert_compare "${lineinfo}" "-ge" "${secs_start}" "${duration}" "${reason}${REASON:+ "$'\n'" ${REASON}}"
+	reason="Took longer than ${secs_end} seconds. Took ${duration} seconds. cmd: $*"
+	_assert_compare "${lineinfo}" "-le" "${secs_end}" "${duration}" "${reason}${REASON:+ "$'\n'" ${REASON}}"
+}
+# This function may be called in "$@" contexts that do not use eval.
+assert_runs_between() { _assert_runs_between "${lineinfo-}" "$@"; }
+alias assert_runs_between="_assert_runs_between \"${_LINEINFO_DATA:?}\" "
 
 setup_runtime_asserts() {
 	local -; set +x
