@@ -152,7 +152,6 @@ pkglibexec_PROGRAMS= \
 		     dirempty \
 		     dirwatch \
 		     locked_mkdir \
-		     lockf \
 		     nc \
 		     poudriered \
 		     ptsort \
@@ -163,7 +162,9 @@ pkglibexec_PROGRAMS= \
 		     timeout \
 		     timestamp \
 		     @BUILD_SH@
+
 EXTRA_PROGRAMS= \
+		lockf \
 		rm \
 		sh
 
@@ -186,6 +187,7 @@ cpdup_CFLAGS=	$(AM_CFLAGS) -D_ST_FLAGS_PRESENT_=1 -Wno-deprecated-declarations
 dirempty_SOURCES=	src/libexec/poudriere/dirempty/dirempty.c
 dirwatch_SOURCES=	src/libexec/poudriere/dirwatch/dirwatch.c
 locked_mkdir_SOURCES=	src/libexec/poudriere/locked_mkdir/locked_mkdir.c
+noinst_PROGRAMS+=	@USE_LOCKF@
 lockf_SOURCES=		external/lockf/lockf.c
 nc_SOURCES=		src/libexec/poudriere/nc/nc.c
 pwait_SOURCES=		external/pwait/pwait.c
@@ -202,7 +204,7 @@ sh_CFLAGS=		$(AM_CFLAGS) -Wno-extra \
 			-DSHELL -std=gnu99 -DVTABSIZE=1000 ${sh_hist_CFLAGS} \
 			-Wno-unused-const-variable \
 			-include $(top_srcdir)/external/sh_compat/compat.h \
-		-I$(top_srcdir)/src \
+			-I$(top_srcdir)/src \
 			-I$(top_srcdir)/external/sh
 sh_LDADD=		${sh_hist_LDADD} -lsbuf
 if MAINTAINER_MODE
@@ -219,12 +221,6 @@ CLEANFILES+=		\
 			src/poudriere-sh/builtins.h \
 			src/poudriere-sh/shell.h
 sh_SOURCES+=		\
-			src/libexec/poudriere/clock/clock.c \
-			src/libexec/poudriere/dirempty/dirempty.c \
-			src/libexec/poudriere/locked_mkdir/locked_mkdir.c \
-			external/pwait/pwait.c \
-			src/libexec/poudriere/rename/rename.c \
-			external/rm/rm.c \
 			src/poudriere-sh/builtins-poudriere.def \
 			src/poudriere-sh/helpers.c \
 			src/poudriere-sh/helpers.h \
@@ -241,7 +237,12 @@ sh_SOURCES+=		\
 			src/poudriere-sh/traps.c \
 			src/poudriere-sh/unlink.c \
 			src/poudriere-sh/wc.c
-
+sh_SOURCES+=		$(clock_SOURCES)
+sh_SOURCES+=		$(dirempty_SOURCES)
+sh_SOURCES+=		$(locked_mkdir_SOURCES)
+sh_SOURCES+=		$(pwait_SOURCES)
+sh_SOURCES+=		$(rename_SOURCES)
+sh_SOURCES+=		$(rm_SOURCES)
 noinst_PROGRAMS+=	external/sh/mknodes
 external_sh_mknodes_SOURCES= external/sh/mknodes.c
 external/sh/nodes.c: external/sh/mknodes \

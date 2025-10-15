@@ -36,7 +36,7 @@ alias redirect_to_real_stderr='2>&${OUTPUT_REDIRECTED_STDERR:-2} '
 alias redirect_to_real_tty='redirect_to_real_stdout redirect_to_real_stderr '
 alias redirect_to_bulk='redirect_to_real_tty '
 
-case "$%$+${FUNCNAME}" in
+case "$%$+${FUNCNAME-}" in
 '$%$+') ;;
 # Customization.
 # $% = getpid()
@@ -966,14 +966,6 @@ injail_tty() {
 
 jstart() {
 	local mpath name network
-	local MAX_MEMORY_BYTES
-
-	unset MAX_MEMORY_BYTES
-	case "${MAX_MEMORY:+set}" in
-	set)
-		MAX_MEMORY_BYTES="$((MAX_MEMORY * 1024 * 1024 * 1024))"
-		;;
-	esac
 	network="${LOCALIPARGS:?}"
 
 	case "${RESTRICT_NETWORKING-}" in
@@ -993,7 +985,7 @@ jstart() {
 	jail -c persist "name=${name:?}" \
 		"path=${mpath:?}" \
 		"host.hostname=${BUILDER_HOSTNAME-${name}}" \
-		"${network}" ${JAIL_PARAMS-}
+		${network} ${JAIL_PARAMS-}
 	# Allow networking in -n jail
 	jail -c persist "name=${name}-n" \
 		"path=${mpath:?}" \
@@ -1751,25 +1743,26 @@ exit_handler() {
 		if [ -n "${MASTER_DATADIR-}" ] &&
 		    [ -d "${MASTER_DATADIR}" ]; then
 			cd "${MASTER_DATADIR:?}"
-		fi
 
-		# Save the .p dir on error exit.
-		# Super cautious to avoid any errors here.
-		case "${EXIT_STATUS}" in
-		0|130) ;;
-		*)
-			case "${MASTER_DATADIR:+set}.${BUILDNAME:+set}.${MASTERNAME:+set}" in
-			set.set.set)
-				local log
+			# Save the .p dir on error exit.
+			# Super cautious to avoid any errors here.
+			case "${EXIT_STATUS}" in
+			0|130) ;;
+			*)
+				case "${BUILDNAME:+set}.${MASTERNAME:+set}" in
+				set.set)
+					local log
 
-				if _log_path log; then
-					find -x "${MASTER_DATADIR}" -ls \
-					    > "${log:?}/.poudriere.datadir%"
-				fi
+					if _log_path log &&
+					    [ -d "${log}" ]; then
+						find -x . -ls > \
+						    "${log:?}/.poudriere.datadir%"
+					fi
+					;;
+				esac
 				;;
 			esac
-			;;
-		esac
+		fi
 	fi
 
 	case "${EXIT_STATUS}" in
