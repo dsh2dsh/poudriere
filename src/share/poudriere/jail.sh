@@ -64,8 +64,8 @@ Options:
     -m method     -- When used with -c, overrides the default method for
                      obtaining and building the jail. See poudriere(8) for more
                      details. Can be one of:
-                       'ftp-archive', 'ftp', 'freebsdci', 'http',
-		       'null', 'src=PATH', 'tar=PATH', 'url=URL', 'pkgbase=repo' or
+                       'ftp-archive', 'ftp', 'freebsdci', 'http', 'null',
+		       'src=PATH', 'tar=PATH', 'url=URL', 'pkgbase[=repo]' or
 		       '{git,svn}{,+http,+https,+file,+ssh}' (e.g., 'git+https').
                      The default is '${METHOD_DEF}'.
     -P patch      -- Specify a patch to apply to the source before building.
@@ -117,8 +117,8 @@ list_jail() {
 			_jget method ${name} method
 			_jget mnt ${name} mnt
 			_jget timestamp ${name} timestamp || :
-			if [ -r "${mnt}/sys/sys/param.h" ]; then
-				osversion=$(awk '/^\#define[[:blank:]]__FreeBSD_version/ {print $3}' "${mnt}/sys/sys/param.h")
+			if [ -r "${mnt}/usr/include/sys/param.h" ]; then
+				osversion=$(awk '/^\#define[[:blank:]]__FreeBSD_version/ {print $3}' "${mnt}/usr/include/sys/param.h")
 			else
 				osversion=
 			fi
@@ -464,6 +464,9 @@ setup_build_env() {
 		[ -n "${FMAKE}" ] ||
 			err 1 "You need fmake installed on the host: devel/fmake"
 		MAKE_CMD=${FMAKE}
+	fi
+	if ! [ ${VERBOSE} -gt 0 ]; then
+		MAKE_CMD="${MAKE_CMD} -s"
 	fi
 
 	: ${CCACHE_BIN:="/usr/local/libexec/ccache"}
@@ -917,14 +920,16 @@ install_from_pkgbase() {
 	mkdir -p "${JAILMNT}/etc/pkg"
 	cat <<EOF > "${JAILMNT}/etc/pkg/pkgbase.conf"
 pkgbase: {
-  url: "${SOURCES_URL}/FreeBSD:${VERSION}:${ARCH}/${PKGBASEREPO}"
+  url: "${SOURCES_URL%/}/FreeBSD:${VERSION}:${ARCH}/${PKGBASEREPO#/}"
+  mirror_type: "${PKGBASEMIRROR}"
   enabled: yes
 }
 EOF
 	cat <<EOF > "${JAILMNT}/etc/pkg/FreeBSD2.conf"
-FreeBSD: {
-  enabled: no
-}
+FreeBSD: { enabled: no }
+FreeBSD-ports: { enabled: no }
+FreeBSD-ports-kmods: { enabled: no }
+FreeBSD-base: { enabled: no }
 EOF
 
 	pkg -o IGNORE_OSVERSION=yes -o REPOS_DIR="${JAILMNT}/etc/pkg" -o ABI="FreeBSD:${VERSION}:${ARCH}" -r ${JAILMNT}/ update
@@ -952,9 +957,13 @@ create_jail() {
 			err ${EX_USAGE} "Must set -M to path of jail to use"
 			;;
 		esac
-		case "${JAILMNT}" in
-		"/")
-			err ${EX_USAGE} "Cannot use / for -M"
+		case "${ALLOW_CLONING_HOST:-no}" in
+		no)
+			case "${JAILMNT}" in
+			"/")
+				err ${EX_USAGE} "Cannot use / for -M"
+				;;
+			esac
 			;;
 		esac
 	fi
@@ -1049,7 +1058,19 @@ create_jail() {
 		    err 1 "Must specify repository to use -m pkgbase=repodir"
 		[ -n "${SOURCES_URL}" ] ||
 		    err 1 "Must specify URL to use -m pkgbase=repodir with -U"
+		case "${SOURCES_URL}" in
+		pkg+https://*) PKGBASEMIRROR="srv" ;;
+		*) PKGBASEMIRROR="none" ;;
+		esac
 		METHOD="${METHOD%%=*}"
+		;;
+	pkgbase)
+		FCT=install_from_pkgbase
+		[ -z "${SOURCES_URL}" ] ||
+		    err 1 "Cannot specify -U with -m pkgbase"
+		SOURCES_URL="pkg+https://pkg.freebsd.org/"
+		PKGBASEREPO='base_release_${VERSION_MINOR}'
+		PKGBASEMIRROR="srv"
 		;;
 	null)
 		JAILFS=none
@@ -1389,6 +1410,7 @@ if ! svn_git_checkout_method "${SOURCES_URL}" "${METHOD}" \
 	http) ;;
 	null) ;;
 	pkgbase=*) ;;
+	pkgbase) ;;
 	src=*) ;;
 	tar=*) ;;
 	url=*) ;;

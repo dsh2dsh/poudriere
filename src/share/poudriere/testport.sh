@@ -56,7 +56,7 @@ Options:
     -n          -- Dry-run. Show what will be done, but do not build
                    any packages.
     -N          -- Do not build package repository when build is completed
-    -NN         -- Do not commit package repository when build is completed
+    -NN         -- Do not commit/publish package repository when build is completed
     -O overlays -- Specify extra ports trees to overlay
     -p tree     -- Specify the path to the ports tree
     -P          -- Use custom prefix
@@ -127,9 +127,6 @@ while getopts "b:B:o:cniIj:J:kNO:p:PSvwz:" FLAG; do
 			if [ "${NFLAG}" -eq 2 ]; then
 				# Don't commit the packages.  This is effectively
 				# the same as -n but does an actual build.
-				if [ "${ATOMIC_PACKAGE_REPOSITORY}" != "yes" ]; then
-					err ${EX_USAGE} "-NN only makes sense with ATOMIC_PACKAGE_REPOSITORY=yes"
-				fi
 				COMMIT=0
 			fi
 			;;
@@ -380,10 +377,8 @@ ret=0
 
 # Don't show timestamps in msg() which goes to logs, only job_msg()
 # which goes to master
-NO_ELAPSED_IN_MSG=1
 TIME_START_JOB=$(clock -monotonic)
-build_port "${ORIGINSPEC}" "${PKGNAME}" || ret=$?
-unset NO_ELAPSED_IN_MSG
+NO_ELAPSED_IN_MSG=1 build_port "${ORIGINSPEC}" "${PKGNAME}" || ret=$?
 now=$(clock -monotonic)
 elapsed=$((now - TIME_START_JOB))
 
