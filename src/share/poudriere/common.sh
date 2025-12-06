@@ -2142,8 +2142,6 @@ _siginfo_handler() {
 	local tmpfs cpu mem nbq
 	local -
 
-	set +e
-
 	_bget status status || status=unknown
 	case "${status}" in
 	"index:"|"crashed:"*|"stopped:crashed:"*)
@@ -2300,7 +2298,10 @@ _siginfo_handler() {
 
 siginfo_handler() {
 	local -; set +x
+
+	# Reset state that this trap doesn't expect.
 	unset IFS
+	set +e +u
 
 	trap '' INFO
 	if ! was_a_bulk_run; then
@@ -5379,15 +5380,14 @@ build_port() {
 	case "${BUILD_AS_NON_ROOT}" in
 	"yes") shash_remove pkgname-need_root "${pkgname}" NEED_ROOT || : ;;
 	esac
-	case "${PORT_FLAGS:+set}" in
-	set)
-		shash_unset pkgname-prefix "${pkgname}" PREFIX
-		;;
-	*)
+	if was_a_testport_run; then
+		# PREFIX will already be set
+		dev_assert_not "" "${PREFIX-}"
+		shash_unset pkgname-prefix "${pkgname}"
+	else
 		shash_remove pkgname-prefix "${pkgname}" PREFIX ||
-		    err 1 "build_port: shash_get PREFIX"
-		;;
-	esac
+		    err 1 "build_port: shash_get PREFIX for pkgname=${pkgname}"
+	fi
 
 	allownetworking=0
 
@@ -5652,7 +5652,6 @@ build_port() {
 
 			job_build_status "stage-qa" "${originspec}" "${pkgname}"
 			if ! cleanenv injail /usr/bin/env DEVELOPER=1 \
-			    PROXYDEPS_FATAL=1 \
 			    ${PORT_FLAGS:=-S "${PORT_FLAGS}"} \
 			    /usr/bin/make -C ${portdir} ${MAKE_ARGS} \
 			    stage-qa; then
@@ -6343,7 +6342,7 @@ parallel_build() {
 
 	# The port-to-test is "queued" but won't build in here. Avoid
 	# starting a builder for it.
-	if was_a_testport_run; then
+	if was_a_testport_run && [ -z "${IGNORE:+set}" ]; then
 		dev_assert_not 0 "${nremaining}"
 		nremaining="$((nremaining - 1))"
 	fi
@@ -7000,6 +6999,7 @@ deps_fetch_vars() {
 	local _prefix _pkgname_var _pdeps_var _bdeps_var _rdeps_var
 	local _depend_specials= _build_as_non_root= _need_root=
 	local dist_subdir dist_allfiles
+	local port_flags
 
 	originspec_decode "${originspec}" origin _origin_flavor _origin_subpkg
 	# If we were passed in a FLAVOR then we better have already looked up
@@ -7052,7 +7052,11 @@ deps_fetch_vars() {
 	case "${BUILD_AS_NON_ROOT}" in
 	yes) _build_as_non_root="NEED_ROOT _need_root" ;;
 	esac
+	# This is for testport.
+	shash_remove originspec-port_flags "${originspec}" port_flags ||
+	    port_flags=
 	if ! port_var_fetch_originspec "${originspec}" \
+		${port_flags-} \
 		${_pkgname_var} _pkgname \
 		${_lookup_flavors} \
 		'${_DEPEND_SPECIALS:C,^${PORTSDIR}/,,}' _depend_specials \
@@ -8143,7 +8147,7 @@ package_libdeps_satisfied() {
 				    "will NOT be rebuilt (ignorelisted) but" \
 				    "it misses ${shlib} which no" \
 				    "dependency provides. It is likely" \
-				    "failing testport/stage-qa." \
+				    "(silently) failing testport/stage-qa." \
 				    "Report to maintainer."
 			else
 				ret=1
@@ -8151,7 +8155,7 @@ package_libdeps_satisfied() {
 				    "will be rebuilt as" \
 				    "it misses ${shlib} which no" \
 				    "dependency provides. It is likely" \
-				    "failing testport/stage-qa." \
+				    "(silently) failing testport/stage-qa." \
 				    "Report to maintainer."
 			fi
 			pls_reason="misses undeclared shlib ${shlib:?}"
