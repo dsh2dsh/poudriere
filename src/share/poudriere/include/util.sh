@@ -35,6 +35,12 @@ if ! type eargs 2>/dev/null >&2; then
 	}
 fi
 
+if ! type clock 2>/dev/null >&2; then
+clock() {
+	date +%s
+}
+fi
+
 case "$(type "have_builtin" 2>/dev/null)" in
 # The builtin version avoids searching PATH.
 *"is a shell builtin") ;;
@@ -504,7 +510,7 @@ _update_relpaths() {
 	local _ur_var _ur_ret
 
 	_ur_ret=0
-	for _ur_var in ${RELATIVE_PATH_VARS}; do
+	for _ur_var in ${RELATIVE_PATH_VARS-}; do
 		make_relative "${_ur_var:?}" "${_ur_oldroot:?}" \
 		    "${_ur_newroot:?}" || _ur_ret="$?"
 	done
@@ -518,7 +524,7 @@ add_relpath_var() {
 
 	getvar "${arv_var}" arv_val ||
 	    err "${EX_SOFTWARE}" "add_relpath_var: \$${arv_var} path must be set"
-	case " ${RELATIVE_PATH_VARS} " in
+	case " ${RELATIVE_PATH_VARS-} " in
 	*" ${arv_var} "*) ;;
 	*) RELATIVE_PATH_VARS="${RELATIVE_PATH_VARS:+${RELATIVE_PATH_VARS} }${arv_var}" ;;
 	esac

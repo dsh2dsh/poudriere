@@ -3474,7 +3474,7 @@ check_emulation() {
 	local wanted_arch="${2}"
 
 	if need_emulation "${wanted_arch}"; then
-		msg "Cross-building ports for ${wanted_arch} on ${real_arch} requires QEMU"
+		msg "Using QEMU for cross-buildiing ${wanted_arch} on ${real_arch}"
 		[ -x "${BINMISC}" ] || \
 		    err 1 "Cannot find ${BINMISC}. Install ${BINMISC} and restart"
 		EMULATOR=$(${BINMISC} lookup ${wanted_arch#*.} 2>/dev/null | \
@@ -6762,8 +6762,8 @@ build_pkg() {
 		_tmpfs_blacklist_tmpdir tmpfs_blacklist_tmpdir
 		mkdir -p "${tmpfs_blacklist_tmpdir:?}"
 		tmpfs_blacklist_dir="$(\
-			TMPDIR="${tmpfs_blacklist_tmpdir:?}" \
-			mktemp -dt "${pkgname:?}")"
+		    mktemp -dt "${pkgname:?}" \
+		    -p "${tmpfs_blacklist_tmpdir:?}")"
 		${NULLMOUNT} "${tmpfs_blacklist_dir:?}" "${mnt:?}/wrkdirs"
 		echo "${tmpfs_blacklist_dir:?}" \
 		    > "${mnt:?}/.tmpfs_blacklist_dir"
