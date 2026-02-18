@@ -934,6 +934,13 @@ do_poudriere() {
 _setup_overlays() {
 	local omnt oname
 
+	REAL_OVERLAYS=
+	case "${OVERLAYS-}" in
+	"")
+		# Nothing to do
+		return 0
+		;;
+	esac
 	# Setup basic overlay to test-ports/overlay/ dir.
 	case "${OVERLAYSDIR-}" in
 	"/overlays")
@@ -941,7 +948,6 @@ _setup_overlays() {
 		;;
 	esac
 	mkdir -p "${MASTERMNT:?}/${OVERLAYSDIR:?}"
-	REAL_OVERLAYS=
 	for o in ${OVERLAYS}; do
 		# This is the git checkout dir test-ports/${o}
 		omnt="${PTMNT%/*}/${o}"
@@ -964,7 +970,6 @@ _setup_overlays() {
 		ln -hfs "${omnt:?}" "${MASTERMNT:?}/${OVERLAYSDIR:?}/${oname:?}"
 		REAL_OVERLAYS="${REAL_OVERLAYS:+${REAL_OVERLAYS} }${oname}"
 	done
-	SAVE_OVERLAYS="${OVERLAYS}"
 	recache_pkgnames
 }
 
@@ -1368,9 +1373,10 @@ _assert_bulk_build_results() {
 		case "${pkgname}" in
 		"${TESTPKGNAME}")
 			# testport does not produce a package for the target
-			# port
-			assert_ret_not 0 [ -f "${file}" ]
-			assert 0 $? "Package should NOT exist: ${file}"
+			# port, but it should retain the existing one
+			# from before testport.
+			# assert_ret_not 0 [ -f "${file}" ]
+			# assert 0 $? "Package should NOT exist: ${file}"
 			continue
 			;;
 		esac

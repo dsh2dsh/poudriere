@@ -152,8 +152,10 @@ write_pid(const int dirfd, const char *lockdirpath, pid_t writepid)
 	    0666);
 	if (fd == -1) {
 		serrno = errno;
-		(void)unlinkat(dirfd, pidpath, 0);
-		(void)unlinkat(dirfd, lockdirpath, AT_REMOVEDIR);
+		if (unlinkat(dirfd, pidpath, 0) != 0)
+			warn("unlink %s", pidpath);
+		if (unlinkat(dirfd, lockdirpath, AT_REMOVEDIR) != 0)
+			warn("unlinkdir %s", lockdirpath);
 #ifdef SHELL
 		cleanup();
 		INTON;
@@ -164,8 +166,10 @@ write_pid(const int dirfd, const char *lockdirpath, pid_t writepid)
 	if ((f = fdopen(fd, "w")) == NULL) {
 		serrno = errno;
 		close(fd);
-		(void)funlinkat(dirfd, pidpath, fd, 0);
-		(void)unlinkat(dirfd, lockdirpath, AT_REMOVEDIR);
+		if (funlinkat(dirfd, pidpath, fd, 0) != 0)
+			warn("funlink %s", pidpath);
+		if (unlinkat(dirfd, lockdirpath, AT_REMOVEDIR) != 0)
+			warn("unlinkdir %s", lockdirpath);
 #ifdef SHELL
 		cleanup();
 		INTON;
@@ -176,8 +180,10 @@ write_pid(const int dirfd, const char *lockdirpath, pid_t writepid)
 
 	if (fprintf(f, "%u\n", writepid) < 0) {
 		serrno = errno;
-		(void)funlinkat(dirfd, pidpath, fd, 0);
-		(void)unlinkat(dirfd, lockdirpath, AT_REMOVEDIR);
+		if (funlinkat(dirfd, pidpath, fd, 0) != 0)
+			warn("funlink %s", pidpath);
+		if (unlinkat(dirfd, lockdirpath, AT_REMOVEDIR) != 0)
+			warn("unlinkdir %s", lockdirpath);
 #ifdef SHELL
 		fclose(f);
 		cleanup();
@@ -189,8 +195,10 @@ write_pid(const int dirfd, const char *lockdirpath, pid_t writepid)
 
 	if (fclose(f) != 0) {
 		serrno = errno;
-		(void)funlinkat(dirfd, pidpath, fd, 0);
-		(void)unlinkat(dirfd, lockdirpath, AT_REMOVEDIR);
+		if (funlinkat(dirfd, pidpath, fd, 0) != 0)
+			warn("funlink %s", pidpath);
+		if (unlinkat(dirfd, lockdirpath, AT_REMOVEDIR) != 0)
+			warn("unlinkdir %s", lockdirpath);
 #ifdef SHELL
 		cleanup();
 		INTON;
@@ -228,11 +236,16 @@ stale_lock(const int dirfd, const char *lockdirpath, pid_t *outpid)
 	/* Read failure is fatal. */
 	if (fgets(pidbuf, sizeof(pidbuf), f) == NULL) {
 #ifdef SHELL
+		int serrno = errno;
 		fclose(f);
+		errno = serrno;
 		cleanup();
 		INTON;
 #endif
-		err(1, "%s", "fread(pid)");
+		if (ferror(f))
+			err(1, "fread(pid)");
+		else
+			errx(1, "fread(pid): no data in %s", pidpath);
 	}
 	pidlen = strlen(pidbuf);
 	if (pidbuf[pidlen - 1] == '\n')
@@ -252,8 +265,11 @@ done:
 		 * This won't race with other locked_mkdir since we hold
 		 * the flock.
 		 */
-		if (f != NULL)
-			(void)funlinkat(dirfd, pidpath, fd, 0);
+		if (f != NULL) {
+			if (funlinkat(dirfd, pidpath, fd, 0) != 0) {
+				warn("funlink %s", pidpath);
+			}
+		}
 	}
 	if (f != NULL)
 		fclose(f);
@@ -319,10 +335,8 @@ main(int argc, char **argv)
 	dirfd = open(dirpath, O_RDONLY | O_DIRECTORY);
 	if (dirfd == -1) {
 #ifdef SHELL
-		serrno = errno;
 		cleanup();
 		INTON;
-		errno = serrno;
 #endif
 		err(1, "%s", "opendir");
 	}
