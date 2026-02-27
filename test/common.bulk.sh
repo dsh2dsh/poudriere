@@ -1,9 +1,6 @@
 set -e
 # Common setup for bulk test runs
 : ${ALL:=0}
-# Avoid injail() for port_var_fetch
-INJAIL_HOST=1
-
 : ${SCRIPTNAME:=${0}}
 
 . ./common.sh
@@ -72,7 +69,7 @@ cache_pkgnames() {
 	fi
 
 	# XXX: subpkg
-	cleanenv port_var_fetch_originspec "${originspec}" \
+	cleanenv inhost port_var_fetch_originspec "${originspec}" \
 	   PKGNAME pkgname \
 	   FLAVORS flavors \
 	   FLAVOR port_flavor \
@@ -87,7 +84,7 @@ cache_pkgnames() {
 		      flavor_default tmp x
 
 		originspec_encode originspec_default "${origin}" '' "${subpkg}"
-		cleanenv port_var_fetch_originspec "${originspec_default}" \
+		cleanenv inhost port_var_fetch_originspec "${originspec_default}" \
 		   PKGNAME pkgname_default \
 		   FLAVORS flavors_default \
 		   FLAVOR flavor_default || exit 99
@@ -932,7 +929,7 @@ do_poudriere() {
 }
 
 _setup_overlays() {
-	local omnt oname
+	local o omnt oname
 
 	REAL_OVERLAYS=
 	case "${OVERLAYS-}" in
@@ -944,30 +941,16 @@ _setup_overlays() {
 	# Setup basic overlay to test-ports/overlay/ dir.
 	case "${OVERLAYSDIR-}" in
 	"/overlays")
-		OVERLAYSDIR="$(mktemp -ut overlays)"
+		OVERLAYSDIR="${PTMNT%/*}"
 		;;
 	esac
-	mkdir -p "${MASTERMNT:?}/${OVERLAYSDIR:?}"
 	for o in ${OVERLAYS}; do
 		# This is the git checkout dir test-ports/${o}
 		omnt="${PTMNT%/*}/${o}"
 		[ -d "${omnt}" ] || continue
-		oname=$(echo "${omnt}" | tr '[./]' '_')
-		# A previous run may have already setup this overlay.
-		case "$(realpath -q "${MASTERMNT:?}/${OVERLAYSDIR:?}/${oname:?}" || :)" in
-		"$(realpath "${omnt}")")
-			REAL_OVERLAYS="${REAL_OVERLAYS:+${REAL_OVERLAYS} }${oname}"
-			continue
-			;;
-		esac
+		oname="${o}"
 		pset "${oname}" mnt "${omnt}"
 		pset "${oname}" method "-"
-		# We run port_var_fetch_originspec without a jail so can't use plain
-		# /overlays. Need to link the host path into our fake MASTERMNT path
-		# as well as link to the overlay portdir without nullfs.
-		#mkdir -p "${MASTERMNT:?}/${OVERLAYSDIR%/*}"
-		ln -hfs "${MASTERMNT:?}/${OVERLAYSDIR:?}" "${OVERLAYSDIR:?}"
-		ln -hfs "${omnt:?}" "${MASTERMNT:?}/${OVERLAYSDIR:?}/${oname:?}"
 		REAL_OVERLAYS="${REAL_OVERLAYS:+${REAL_OVERLAYS} }${oname}"
 	done
 	recache_pkgnames
@@ -987,7 +970,7 @@ _setup_build() {
 	ALL_PKGNAMES=
 	ALL_ORIGINS=
 	if [ ${ALL} -eq 1 ]; then
-		LISTPORTS="$(set_pipefail; set -e; listed_ports | paste -s -d ' ' -)"
+		LISTPORTS="$(set_pipefail; set -e; inhost listed_ports | paste -s -d ' ' -)"
 		assert 0 "$?"
 	fi
 	LISTPORTS="$(sorted "${LISTPORTS}")"
@@ -1008,7 +991,7 @@ _setup_build() {
 	done
 	echo " done"
 	expand_origin_flavors "${LISTPORTS}" LISTPORTS_EXPANDED
-	fetch_global_port_vars || err 99 "Unable to fetch port vars"
+	inhost fetch_global_port_vars || err 99 "Unable to fetch port vars"
 	assert_not "null" "${P_PORTS_FEATURES-null}" "fetch_global_port_vars should work"
 	echo "Building: $(echo ${LISTPORTS_EXPANDED})"
 	newbuild
@@ -1599,7 +1582,6 @@ export SRCCONF=/dev/null
 export SRC_ENV_CONF=/dev/null
 export PACKAGE_BUILDING=yes
 MASTERNAME="${JAILNAME:?}-${PTNAME:?}-${SETNAME:?}"
-_mastermnt MASTERMNT
 
 set_blacklist() {
 	local blacklist

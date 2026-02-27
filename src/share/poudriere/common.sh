@@ -164,6 +164,15 @@ _err() {
 	local exit_status="${2-}"
 	local msg="${3-}"
 
+	# unwind in_dir()
+	case "${ID_OLDPWD:+set}" in
+	set)
+		if cd "${ID_OLDPWD}"; then
+			ID_OLDPWD=
+		fi
+		;;
+	esac
+
 	if [ -n "${CRASHED:-}" ]; then
 		case "$#" in
 		[012]) ;;
@@ -558,6 +567,8 @@ msg_level() {
 }
 
 _mastermnt() {
+	[ $# -eq 1 ] || eargs _mastermnt MASTERMNT
+	local _mastermnt_var_name="$1"
 	local -; set -u
 	local hashed_name mnt mnttest mnamelen testpath mastername
 
@@ -567,7 +578,7 @@ _mastermnt() {
 
 	# Avoid : which causes issues with PATH for non-jailed commands
 	# like portlint in testport.
-	mastername="${MASTERNAME}"
+	mastername="${MASTERNAME:?}"
 	_gsub_badchars "${mastername}" ":" mastername
 	mnt="${POUDRIERE_DATA:?}/.m/${mastername}/ref"
 	case "${NOLINUX:+set}" in
@@ -576,11 +587,11 @@ _mastermnt() {
 	esac
 	mnttest="${mnt:?}${testpath}"
 
-	if [ "${FORCE_MOUNT_HASH}" = "yes" ] || \
+	if [ "${FORCE_MOUNT_HASH-}" = "yes" ] || \
 	    [ ${#mnttest} -ge $((mnamelen - 1)) ]; then
-		hashed_name=$(sha256 -qs "${MASTERNAME}" | \
+		hashed_name=$(sha256 -qs "${MASTERNAME:?}" | \
 		    awk '{print substr($0, 0, 6)}')
-		mnt="${POUDRIERE_DATA}/.m/${hashed_name}/ref"
+		mnt="${POUDRIERE_DATA:?}/.m/${hashed_name}/ref"
 		mnttest="${mnt}${testpath}"
 		if [ ${#mnttest} -ge $((mnamelen - 1)) ]; then
 			err 1 "Mountpath '${mnt}' exceeds system MNAMELEN limit of ${mnamelen}. Unable to mount. Try shortening BASEFS."
@@ -589,11 +600,12 @@ _mastermnt() {
 	fi
 
 	# MASTERMNT=
-	setvar "$1" "${mnt:?}"
-	MASTERMNTREL="${mnt:?}"
-	add_relpath_var MASTERMNTREL
+	setvar "${_mastermnt_var_name:?}" "${mnt:?}"
+	# MASTERMNTREL=
+	setvar "${_mastermnt_var_name:?}REL" "${mnt:?}"
+	add_relpath_var "${_mastermnt_var_name:?}REL"
 	# MASTERMNTROOT=
-	setvar "${1}ROOT" "${mnt%/ref}"
+	setvar "${_mastermnt_var_name:?}ROOT" "${mnt%/ref}"
 }
 
 _my_path() {
@@ -930,6 +942,16 @@ setup_jexec_limits()  {
 		JEXEC_LIMITS=1
 		;;
 	esac
+}
+
+inhost() {
+	local MASTERMNT MASTERMNTREL MASTERMNTROOT INJAIL_HOST
+
+	MASTERMNT=
+	MASTERMNTREL=
+	MASTERMNTROOT=
+	INJAIL_HOST=1
+	"$@"
 }
 
 injail() {
@@ -1514,6 +1536,8 @@ buildlog_start() {
 	echo "Host OSVERSION: ${HOST_OSVERSION}"
 	echo "Jail OSVERSION: ${JAIL_OSVERSION}"
 	echo "Builder Id: ${MY_BUILDER_ID}"
+	echo "Builder jail path: ${mnt:?}"
+	echo "Ref jail path: ${MASTERMNT:?}"
 	echo "Job Idx: ${MY_JOB_IDX}"
 	echo "Jail Id (no networking)  : $(jls -j ${jname} jid || :)"
 	echo "Jail Name (no networking): ${jname}"
@@ -2494,7 +2518,7 @@ common_mtree() {
 	./var/db/ports
 	./wrkdirs
 	EOF
-	nullpaths="$(nullfs_paths "${mnt}")"
+	nullpaths="$(nullfs_paths)"
 	for dir in ${nullpaths}; do
 		echo ".${dir}"
 	done
@@ -2642,7 +2666,7 @@ do_jail_mounts() {
 	esac
 
 	# Mount some paths read-only from the ref-jail if possible.
-	nullpaths="$(nullfs_paths "${mnt}")"
+	nullpaths="$(nullfs_paths)"
 	if have_builtin mkdir; then
 		for nullpath in ${nullpaths}; do
 			mkdir -p "${mnt:?}${nullpath:?}"
@@ -2794,6 +2818,10 @@ enter_interactive() {
 		priority: 100
 	}
 	FreeBSD-base: {
+		enabled: no,
+		priority: 100
+	}
+	pkgbase: {
 		enabled: no,
 		priority: 100
 	}
@@ -3777,13 +3805,10 @@ jail_start() {
 	fi
 
 	case "${MASTERMNT:+set}" in
-	set)
-		tomnt="${MASTERMNT}"
-		;;
-	*)
-		_mastermnt tomnt
-		;;
+	set) ;;
+	*) err 1 "jail_start: MASTERMNT is expected to be set." ;;
 	esac
+	tomnt="${MASTERMNT:?}"
 	_jget arch ${name} arch || err 1 "Missing arch metadata for jail"
 	get_host_arch host_arch
 	_jget mnt ${name} mnt || err 1 "Missing mnt metadata for jail"
@@ -4720,6 +4745,10 @@ download_from_repo() {
 		priority: 100
 	}
 	FreeBSD-base: {
+		enabled: no,
+		priority: 100
+	}
+	pkgbase: {
 		enabled: no,
 		priority: 100
 	}
