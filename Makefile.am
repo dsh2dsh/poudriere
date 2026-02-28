@@ -395,8 +395,8 @@ poudriere: src/bin/poudriere.in
 	    pkgversion="$(PACKAGE_VERSION)"; \
 	fi; \
 	sed \
-	    -e "s,@PACAKGE_VERSION@,$${pkgversion}," \
-	    -e "s,@USE_DEBUG@,$(USE_DEBUG)," \
+	    -e "s,%PACKAGE_VERSION%,$${pkgversion}," \
+	    -e "s,%USE_DEBUG%,$(USE_DEBUG)," \
 	    ${.ALLSRC} > $@.tmp && mv -f $@.tmp $@; \
 	chmod +x $@
 
