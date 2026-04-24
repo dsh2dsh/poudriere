@@ -8,7 +8,7 @@ FreeBSD port
 [here](https://github.com/dsh2dsh/freebsd-ports/tree/master/ports-mgmt/poudriere-dsh2dsh):
 
 ``` shell
-pkg install zrepl-dsh2dsh
+pkg install poudriere-dsh2dsh
 ```
 
 Changes from upstream:
