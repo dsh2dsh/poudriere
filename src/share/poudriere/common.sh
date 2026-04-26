@@ -2283,7 +2283,7 @@ _siginfo_handler() {
 		    }')
 		EOF
 		for j in ${BUILDERS}; do
-			# Ignore error here as the zfs dataset may not be cloned yet.
+			# Ignore error here as the ZFS dataset may not be cloned yet.
 			_bget status ${j} status || status=
 			# Skip builders not started yet
 			case "${status}" in
@@ -5596,15 +5596,7 @@ build_port() {
 				fi
 			fi
 			;;
-		checksum)
-			JUSER=root
-			if [ "${allownetworking}" -eq 0 ]; then
-				phaseenv="${phaseenv:+${phaseenv} }FETCH_REGET=0"
-			fi
-			;;
-		*-depends)
-			JUSER=root
-			;;
+		checksum|*-depends) JUSER=root ;;
 		stage)
 			if [ "${PORTTESTING}" -eq 1 ]; then
 				markfs prestage "${mnt:?}"
