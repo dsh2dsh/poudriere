@@ -283,6 +283,9 @@ rename_jail() {
 	local cache_dir
 
 	jail_exists ${JAILNAME} || err 1 "No such jail: ${JAILNAME}"
+	[ "${NEWJAILNAME#*.*}" = "${NEWJAILNAME}" ] ||
+		err 1 "The jailname cannot contain a period (.). See jail(8)"
+	check_name_hyphen jail "${NEWJAILNAME}"
 	msg_n "Renaming '${JAILNAME}' in '${NEWJAILNAME}'"
 	mv ${POUDRIERED:?}/jails/${JAILNAME} ${POUDRIERED:?}/jails/${NEWJAILNAME}
 	cache_dir="${POUDRIERE_DATA:?}/cache/${JAILNAME}-*"
@@ -300,7 +303,7 @@ update_pkgbase() {
 		make_jobs="${MAKE_JOBS}"
 	fi
 
-	msg "Starting make update-packages"
+	msg "Starting make update-packages..."
 	env ${PKG_REPO_SIGNING_KEY:+PKG_REPO_SIGNING_KEY="${PKG_REPO_SIGNING_KEY}"} IGNORE_OSMAJOR=y \
 		${MAKE_CMD} -C "${SRC_BASE}" ${make_jobs} update-packages \
 			KERNCONF="${KERNEL}" DESTDIR="${destdir:?}" \
@@ -326,6 +329,18 @@ update_pkgbase() {
 	esac
 }
 
+_pkgbase_get_osversion() {
+	local _pkgbase_major_version _pkgbase_minior_version
+	_pkgbase_major_version="${VERSION%-*}"
+	_pkgbase_minior_version="${_pkgbase_major_version#*.}"
+	_pkgbase_major_version="${_pkgbase_major_version%.*}"
+	# Unlikely to be needed but check if the minor version is two digits and otherwise pad it out
+	if [ "${#_pkgbase_minior_version}" -eq 1 ]; then
+		_pkgbase_minior_version="0${_pkgbase_minior_version}"
+	fi
+	echo -n "-o OSVERSION=${_pkgbase_major_version}${_pkgbase_minior_version}000"
+}
+
 update_jail() {
 	local jail_created_with_build_pkgbase BUILD_PKGBASE
 
@@ -340,7 +355,7 @@ update_jail() {
 		METHOD="${METHOD_DEF}"
 		jset ${JAILNAME} method ${METHOD}
 	fi
-	msg "Upgrading using ${METHOD}"
+	msg "Upgrading using ${METHOD}..."
 	# -B / BUILD_PKGBASE being set in this context may lead to
 	# *build_pkgbase()* being called rather than *update_pkgbase()*.
 	# Set pkgbase based on whether the jail was *created* with -B and
@@ -448,13 +463,18 @@ update_jail() {
 		create_jail
 		;;
 	pkgbase)
+		local _pkgbase_osversion
+		if [ -n "${VERSION}" ] && [ "${VERSION}" != "${VERSION%-*}" ]; then
+			_pkgbase_osversion=$(_pkgbase_get_osversion "${VERSION}")
+		fi
 		VERSION=$(jget ${JAILNAME} version | cut -d '.' -f 1)
 		[ -z "${ARCH}" ] && ARCH=$(jget ${JAILNAME} arch)
-		pkg -o IGNORE_OSVERSION=yes -o ABI="FreeBSD:${VERSION}:${ARCH#*.}" -o REPOS_DIR="${JAILMNT}/etc/pkg" -r "${JAILMNT}" update || \
+		pkg -o IGNORE_OSVERSION=yes -o ABI="FreeBSD:${VERSION}:${ARCH#*.}" ${_pkgbase_osversion} -o REPOS_DIR="${JAILMNT}/etc/pkg" -r "${JAILMNT}" update || \
 			err 1 "pkg update failed"
-		pkg -o IGNORE_OSVERSION=yes -o ABI="FreeBSD:${VERSION}:${ARCH#*.}" -o REPOS_DIR="${JAILMNT}/etc/pkg" -r "${JAILMNT}" upgrade -y || \
+		pkg -o IGNORE_OSVERSION=yes -o ABI="FreeBSD:${VERSION}:${ARCH#*.}" ${_pkgbase_osversion} -o REPOS_DIR="${JAILMNT}/etc/pkg" -r "${JAILMNT}" upgrade -y || \
 			err 1 "pkg upgrade failed"
 		markfs clean ${JAILMNT}
+		RELEASE=$(update_version)
 		;;
 	csup|null|tar)
 		err 1 "Upgrade is not supported with ${METHOD}; to upgrade, please delete and recreate the jail"
@@ -487,7 +507,7 @@ installworld() {
 		make_jobs="${MAKE_JOBS}"
 	fi
 
-	msg "Starting make installworld"
+	msg "Starting make installworld..."
 	objtop="$(${MAKE_CMD} -C "${SRC_BASE:?}" -V OBJTOP || echo)"
 	if [ -z "${objtop}" ] ||
 	    [ ! -e "${objtop}/toolchain-metadata.mk" ]; then
@@ -506,7 +526,7 @@ installworld() {
 	${MAKE_CMD} -C "${SRC_BASE}" ${make_jobs} DESTDIR=${destdir:?} \
 	    distribution ${MAKEWORLDARGS} || err 1 "Failed to 'make distribution'"
 	if [ -n "${KERNEL}" ]; then
-		msg "Starting make installkernel"
+		msg "Starting make installkernel..."
 		${MAKE_CMD} -C "${SRC_BASE}" ${make_jobs} installkernel \
 		    KERNCONF="${KERNEL}" NO_INSTALLEXTRAKERNELS=no DESTDIR=${destdir:?} ${MAKEWORLDARGS} || \
 		    err 1 "Failed to 'make installkernel'"
@@ -523,7 +543,7 @@ build_pkgbase() {
 		make_jobs="${MAKE_JOBS}"
 	fi
 
-	msg "Starting make packages"
+	msg "Starting make packages..."
 	env ${PKG_REPO_SIGNING_KEY:+PKG_REPO_SIGNING_KEY="${PKG_REPO_SIGNING_KEY}"} \
 		${MAKE_CMD} -C "${SRC_BASE}" ${make_jobs} packages \
 			KERNCONF="${KERNEL}" DESTDIR=${destdir:?} \
@@ -626,13 +646,13 @@ buildworld() {
 
 	setup_build_env
 
-	msg "Starting make buildworld with ${PARALLEL_JOBS} jobs"
+	msg "Starting make buildworld with ${PARALLEL_JOBS} jobs..."
 	${MAKE_CMD} -C ${SRC_BASE} buildworld ${MAKE_JOBS} \
 	    ${MAKEWORLDARGS} || err 1 "Failed to 'make buildworld'"
 	BUILTWORLD=1
 
 	if [ -n "${KERNEL}" ]; then
-		msg "Starting make buildkernel with ${PARALLEL_JOBS} jobs"
+		msg "Starting make buildkernel with ${PARALLEL_JOBS} jobs..."
 		${MAKE_CMD} -C ${SRC_BASE} buildkernel ${MAKE_JOBS} \
 			KERNCONF="${KERNEL}" ${MAKEWORLDARGS} || \
 			err 1 "Failed to 'make buildkernel'"
@@ -662,7 +682,7 @@ build_native_xtools() {
 	    [ ! -f "${XDEV_SRC}/Makefile.inc1" ]; then
 		err 1 "${XDEV_SRC} must be a working src tree to build native-xtools. Perhaps you meant to specify -X?"
 	fi
-	msg "Starting make native-xtools with ${PARALLEL_JOBS} jobs in ${XDEV_SRC}"
+	msg "Starting make native-xtools with ${PARALLEL_JOBS} jobs in ${XDEV_SRC}..."
 	# Can use -DNO_NXBTOOLCHAIN if we just ran buildworld to reuse the
 	# toolchain already just built.
 	${MAKE_CMD} -C ${XDEV_SRC} native-xtools ${MAKE_JOBS} \
@@ -707,22 +727,26 @@ install_from_src() {
 	local var_version_extra="$1"
 	local cpignore_flag cpignore
 
+	cpignore_flag=
+	cpignore=
 	msg_n "Copying ${SRC_BASE} to ${JAILMNT}/usr/src..."
-	mkdir -p ${JAILMNT}/usr/src
-	if [ -f ${JAILMNT}/usr/src/.cpignore ]; then
+	mkdir -p "${JAILMNT:?}/usr/src"
+	# Support user-supplied .cpignore.
+	if [ -f "${SRC_BASE:?}/.cpignore" ]; then
 		cpignore_flag="-x"
 	else
-		cpignore=$(mktemp -t cpignore)
+		cpignore="$(mktemp -t cpignore)" ||
+		    err 1 "install_from_src: mktemp failed"
 		cpignore_flag="-X ${cpignore}"
 		# Ignore some files
-		cat > ${cpignore} <<-EOF
+		cat > "${cpignore:?}" <<-EOF
 		.git
 		.svn
 		EOF
 	fi
-	do_clone -r ${cpignore_flag} "${SRC_BASE:?}" "${JAILMNT:?}/usr/src"
+	do_clone_del -r ${cpignore_flag} "${SRC_BASE:?}" "${JAILMNT:?}/usr/src"
 	if [ -n "${cpignore}" ]; then
-		rm -f "${cpignore}"
+		rm -f "${cpignore:?}"
 	fi
 	echo " done"
 	check_kernconf
@@ -760,11 +784,18 @@ install_from_vcs() {
 	if [ ${UPDATE} -eq 0 ]; then
 		case ${METHOD} in
 		svn*)
-			msg_n "Checking out the sources with ${METHOD}..."
+			# !! Any changes here should be considered for ports.sh too.
+			if [ -n "${quiet}" ]; then
+				msg_n "Checking out the sources with ${METHOD}..."
+			else
+				msg "Checking out the sources with ${METHOD}..."
+			fi
 			${SVN_CMD} ${quiet} checkout \
 			    ${SVN_FULLURL}/${VERSION} ${SRC_BASE} || \
 			    err 1 " fail"
-			echo " done"
+			if [ -n "${quiet}" ]; then
+				echo " done"
+			fi
 			if [ -n "${SRCPATCHFILE}" ]; then
 				msg_n "Patching the sources with ${SRCPATCHFILE}"
 				${SVN_CMD} ${quiet} patch ${SRCPATCHFILE} \
@@ -777,33 +808,52 @@ install_from_vcs() {
 			if [ -n "${SRCPATCHFILE}" ]; then
 				err 1 "Patch files not supported with git, please use feature branches"
 			fi
-			msg_n "Checking out the sources with ${METHOD}..."
+			if [ -n "${quiet}" ]; then
+				msg_n "Checking out the sources with ${METHOD}..."
+			else
+				msg "Checking out the sources with ${METHOD}..."
+			fi
 			${GIT_CMD} clone ${GIT_DEPTH} ${quiet} \
 			    ${VERSION:+-b ${VERSION}} ${GIT_FULLURL} \
 			    ${SRC_BASE} || \
 			    err 1 " fail"
-			echo " done"
+			if [ -n "${quiet}" ]; then
+				echo " done"
+			fi
 			# No support for patches, using feature branches is recommanded"
 			;;
 		esac
 	else
 		case ${METHOD} in
 		svn*)
-			msg_n "Updating the sources with ${METHOD}..."
+			# !! Any changes here should be considered for ports.sh too.
+			if [ -n "${quiet}" ]; then
+				msg_n "Updating the sources with ${METHOD}..."
+			else
+				msg "Updating the sources with ${METHOD}..."
+			fi
 			${SVN_CMD} upgrade ${SRC_BASE} 2>/dev/null || :
 			${SVN_CMD} ${quiet} update -r ${TORELEASE:-head} ${SRC_BASE} || err 1 " fail"
-			echo " done"
+			if [ -n "${quiet}" ]; then
+				echo " done"
+			fi
 			;;
 		git*)
 			# !! Any changes here should be considered for ports.sh too.
-			msg_n "Updating the sources with ${METHOD}..."
+			if [ -n "${quiet}" ]; then
+				msg_n "Updating the sources with ${METHOD}..."
+			else
+				msg "Updating the sources with ${METHOD}..."
+			fi
 			${GIT_CMD} -C ${SRC_BASE} pull --rebase ${quiet} || \
 			    err 1 " fail"
 			if [ -n "${TORELEASE}" ]; then
 				${GIT_CMD} -C ${SRC_BASE} checkout \
 				    ${quiet} "${TORELEASE}" || err 1 " fail"
 			fi
-			echo " done"
+			if [ -n "${quiet}" ]; then
+				echo " done"
+			fi
 			;;
 		esac
 	fi
@@ -1004,10 +1054,15 @@ install_from_tar() {
 
 install_from_pkgbase() {
 	msg_n "Installing ${VERSION} ${ARCH} from ${SOURCES_URL} ..."
+	local _pkgbase_major_version _pkgbase_osversion
+	_pkgbase_major_version="${VERSION%%.*}"
+	if [ -n "${VERSION}" ] && [ "${VERSION}" != "${VERSION%-*}" ]; then
+		_pkgbase_osversion=$(_pkgbase_get_osversion "${VERSION}")
+	fi
 	mkdir -p "${JAILMNT}/etc/pkg"
 	cat <<EOF > "${JAILMNT}/etc/pkg/pkgbase.conf"
 pkgbase: {
-  url: "${SOURCES_URL%/}/FreeBSD:${VERSION}:${ARCH#*.}/${PKGBASEREPO#/}"
+  url: "${SOURCES_URL%/}/FreeBSD:${_pkgbase_major_version}:${ARCH#*.}/${PKGBASEREPO#/}"
   mirror_type: "${PKGBASEMIRROR}"
   enabled: yes
 }
@@ -1035,13 +1090,13 @@ FreeBSD-base: {
 }
 EOF
 
-	pkg -o IGNORE_OSVERSION=yes -o REPOS_DIR="${JAILMNT}/etc/pkg" -o ABI="FreeBSD:${VERSION}:${ARCH#*.}" -r ${JAILMNT}/ update || \
+	pkg -o IGNORE_OSVERSION=yes -o REPOS_DIR="${JAILMNT}/etc/pkg" -o ABI="FreeBSD:${_pkgbase_major_version}:${ARCH#*.}" ${_pkgbase_osversion} -r ${JAILMNT}/ update || \
 	    err 1 "pkg update failed"
 	# Omit the man/debug/kernel/src and tests packages, unneeded for us.
-	pkg -o IGNORE_OSVERSION=yes -o REPOS_DIR="${JAILMNT}/etc/pkg" -o ABI="FreeBSD:${VERSION}:${ARCH#*.}" -r ${JAILMNT}/ search -qCx '^FreeBSD-.*' | grep -vE -- '-man|-dbg|-kernel-|-tests|-src-' | xargs pkg -o REPOS_DIR="${JAILMNT}/etc/pkg" -r ${JAILMNT}/ install -y
-	pkg -o IGNORE_OSVERSION=yes -o REPOS_DIR="${JAILMNT}/etc/pkg" -o ABI="FreeBSD:${VERSION}:${ARCH#*.}" -r ${JAILMNT}/ search -q '^FreeBSD-src-sys' | xargs pkg -o REPOS_DIR="${JAILMNT}/etc/pkg" -r ${JAILMNT}/ install -y
+	pkg -o IGNORE_OSVERSION=yes -o REPOS_DIR="${JAILMNT}/etc/pkg" -o ABI="FreeBSD:${_pkgbase_major_version}:${ARCH#*.}" ${_pkgbase_osversion} -r ${JAILMNT}/ search -qCx '^FreeBSD-.*' | grep -vE -- '-man|-dbg|-kernel-|-tests|-src-' | xargs pkg -o REPOS_DIR="${JAILMNT}/etc/pkg" -o ABI="FreeBSD:${_pkgbase_major_version}:${ARCH#*.}" ${_pkgbase_osversion} -r ${JAILMNT}/ install -yU
+	pkg -o IGNORE_OSVERSION=yes -o REPOS_DIR="${JAILMNT}/etc/pkg" -o ABI="FreeBSD:${_pkgbase_major_version}:${ARCH#*.}" ${_pkgbase_osversion} -r ${JAILMNT}/ search -q '^FreeBSD-src-sys' | xargs pkg -o REPOS_DIR="${JAILMNT}/etc/pkg" -o ABI="FreeBSD:${_pkgbase_major_version}:${ARCH#*.}" ${_pkgbase_osversion}  -r ${JAILMNT}/ install -yU
 	if [ -n "${KERNEL}" ]; then
-		pkg -o IGNORE_OSVERSION=yes -o REPOS_DIR="${JAILMNT}/etc/pkg" -o ABI="FreeBSD:${VERSION}:${ARCH#*.}" -r ${JAILMNT}/ install -y FreeBSD-kernel-"${KERNEL}" || \
+		pkg -o IGNORE_OSVERSION=yes -o REPOS_DIR="${JAILMNT}/etc/pkg" -o ABI="FreeBSD:${VERSION}:${ARCH#*.}" ${_pkgbase_osversion} -r ${JAILMNT}/ install -yU FreeBSD-kernel-"${KERNEL}" || \
 			err 1 "Failed to install FreeBSD-kernel-${KERNEL}"
 	fi
 
@@ -1094,6 +1149,7 @@ create_jail() {
 
 	[ "${JAILNAME#*.*}" = "${JAILNAME}" ] ||
 		err 1 "The jailname cannot contain a period (.). See jail(8)"
+	check_name_hyphen jail "${JAILNAME}"
 
 	if [ "${METHOD}" = "null" ]; then
 		case "${JAILMNT:+set}" in

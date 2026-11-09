@@ -117,7 +117,7 @@ recursecopylib() {
 }
 
 mkminiroot() {
-	msg "Making miniroot"
+	msg_n "Making miniroot..."
 	[ -z "${MINIROOT}" ] && err 1 "MINIROOT not defined"
 	mroot=${WRKDIR:?}/miniroot
 	dirs="etc dev boot bin usr/bin libexec lib usr/lib sbin"
@@ -155,9 +155,11 @@ mkminiroot() {
 	done
 	cp -fRPp ${MINIROOT}/ ${mroot:?}/
 
-	makefs "${OUTPUTDIR:?}/${IMAGENAME}-miniroot" ${mroot}
+	makefs "${OUTPUTDIR:?}/${IMAGENAME}-miniroot" ${mroot} \
+	    >/dev/null 2>&1
 	[ -f "${OUTPUTDIR:?}/${IMAGENAME}-miniroot.gz" ] && rm "${OUTPUTDIR:?}/${IMAGENAME}-miniroot.gz"
 	gzip -9 "${OUTPUTDIR:?}/${IMAGENAME}-miniroot"
+	echo " done"
 }
 
 get_pkg_abi() {
@@ -183,7 +185,7 @@ get_uefi_bootname() {
 make_esp_file() {
     local file size loader device stagedir fatbits efibootname
 
-    msg "Creating ESP image"
+    msg_n "Creating ESP image..."
     file=$1
     size=$2
     loader=$3
@@ -210,7 +212,7 @@ make_esp_file() {
 	"${file}" "${stagedir}" \
 	>/dev/null 2>&1
     rm -rf "${stagedir:?}"
-    msg "ESP Image created"
+    echo " done"
 }
 
 # Convert @flavor from package list to a unique entry of pkgname, otherwise it
@@ -250,18 +252,24 @@ install_world_from_pkgbase()
 	       }
 -EOF
 	pkg -o ABI_FILE="${mnt}/usr/lib/crt1.o" -o REPOS_DIR=${WRKDIR}/world/etc/pkg/ -o ASSUME_ALWAYS_YES=yes -r ${WRKDIR:?}/world update ${PKG_QUIET}
-	msg "Installing base packages"
+	if [ -n "${PKG_QUIET}" ]; then
+		msg_n "Installing base packages..."
+	else
+		msg "Installing base packages..."
+	fi
 	while read line; do
 		pkg -o ABI_FILE="${mnt}/usr/lib/crt1.o" -o REPOS_DIR=${WRKDIR}/world/etc/pkg/ -o ASSUME_ALWAYS_YES=yes -r ${WRKDIR:?}/world install -r local ${PKG_QUIET} -y ${line}
 	done < ${PKGBASELIST}
 	rm ${WRKDIR:?}/world/etc/pkg/FreeBSD-base.conf
-	msg "Base packages installed"
+	if [ -n "${PKG_QUIET}" ]; then
+		echo " done"
+	fi
 }
 
 install_world()
 {
     # Use of tar given cpdup has a pretty useless -X option for this case
-	msg "Installing world with tar"
+	msg_n "Installing world with tar..."
 	tar -C ${mnt:?} -X ${excludelist} -cf - . | tar -xf - -C ${WRKDIR:?}/world
 	touch ${WRKDIR:?}/src.conf
 	[ ! -f ${POUDRIERED}/src.conf ] || cat ${POUDRIERED}/src.conf > ${WRKDIR:?}/src.conf
@@ -271,7 +279,7 @@ install_world()
 	if [ -f ${mnt:?}/usr/src/Makefile ]; then
 	    make -s -C ${mnt:?}/usr/src DESTDIR=${WRKDIR:?}/world BATCH_DELETE_OLD_FILES=yes SRCCONF=${WRKDIR:?}/src.conf delete-old delete-old-libs
 	fi
-	msg "Installing world done"
+	echo " done"
 }
 
 HOSTNAME=poudriere-image

@@ -1059,17 +1059,17 @@ jstart() {
 		"host.hostname=${BUILDER_HOSTNAME-${name}}" \
 		${network} ${JAIL_PARAMS-} ||
 	    err 1 "jstart: Failed to start jail ${name:?}" \
-		"${network:+network="'${network}'"}" \
-		"${JAIL_PARAMS:+JAIL_PARAMS="'${JAIL_PARAMS}'"}"
+		"${network:+network='${network}'}" \
+		"${JAIL_PARAMS:+JAIL_PARAMS='${JAIL_PARAMS}'}"
 	# Allow networking in -n jail
 	jail -c persist "name=${name}-n" \
 		"path=${mpath:?}" \
 		"host.hostname=${BUILDER_HOSTNAME-${name}}" \
 		${IPARGS:?} ${JAIL_PARAMS-} ${JAIL_NET_PARAMS-} ||
 	    err 1 "jstart: Failed to start networking jail ${name:?}-n" \
-		"${JAIL_PARAMS:+JAIL_PARAMS="'${JAIL_PARAMS}'"}" \
+		"${JAIL_PARAMS:+JAIL_PARAMS='${JAIL_PARAMS}'}" \
 		"${IPARGS:+IPARGS='${IPARGS}'}" \
-		"${JAIL_NET_PARAMS:+JAIL_NET_PARAMS="'${JAIL_NET_PARAMS}'"}"
+		"${JAIL_NET_PARAMS:+JAIL_NET_PARAMS='${JAIL_NET_PARAMS}'}"
 	return 0
 }
 
@@ -2904,7 +2904,7 @@ enter_interactive() {
 		cat >> "${MASTERMNT:?}/etc/motd" <<-EOF
 		ORIGIN:			${port:?}
 		PORTDIR:		${portdir:?}
-		WRKDIR:			$(injail make -C "${portdir:?}" -V WRKDIR)
+		WRKDIR:			$(injail make -C "${portdir:?}" ${flavor:+FLAVOR=${flavor}} -V WRKDIR)
 		EOF
 		case "${flavor:+set}" in
 		set)
@@ -3816,6 +3816,18 @@ unset_cross_env() {
 	unset OSVERSION
 }
 
+check_name_hyphen() {
+	[ $# -eq 2 ] || eargs check_name_hyphen kind name
+	local kind="$1"
+	local name="$2"
+
+	case "${name}" in
+	*-*)
+		msg_warn "Using a hyphen (-) in a ${kind} name is not recommended; it can cause ambiguity when parsing the build name."
+		;;
+	esac
+}
+
 jail_start() {
 	[ $# -ge 2 ] || eargs jail_start name ptname setname
 	local name=$1
@@ -3856,11 +3868,7 @@ jail_start() {
 		needkld="${needkld} sem"
 	fi
 
-	case "${setname}" in
-	*-*)
-		msg_warn "Using '-' in a SETNAME is not recommended as it causes ambiguities with parsing the build name of ${MASTERNAME}"
-		;;
-	esac
+	check_name_hyphen set "${setname}"
 
 	if [ "${DISTFILES_CACHE}" != "no" -a ! -d "${DISTFILES_CACHE}" ]; then
 		err 1 "DISTFILES_CACHE directory does not exist. (cf.  poudriere.conf)"
@@ -4652,7 +4660,7 @@ download_from_repo_check_pkg() {
 	    $1 == pkgbase {
 		    # Trim out PKG_NO_VERSION_FOR_DEPS missing version
 		    sub(/-\(null\)$/, "", $2)
-		    sub(/-$/, '' $2)
+		    sub(/-$/, "", $2)
 		    print $2
 		    printed=1
 	    }
@@ -5459,7 +5467,11 @@ build_port() {
 	local max_execution_time allownetworking
 	local NEED_ROOT PREFIX MAX_FILES
 	local JEXEC_SETSID
+	local pkg_stage pkg_stage_real pkg_target
 	local -
+
+	pkgname_is_valid "${pkgname}" ||
+	    err 1 "build_port: Invalid PKGNAME '${pkgname}'"
 
 	_my_path mnt
 	_log_path log
@@ -5630,7 +5642,7 @@ build_port() {
 			# Skip for all linux ports, they are not safe
 			*"linux"*) ;;
 			*)
-				msg "Checking shared library dependencies"
+				msg "Checking shared library dependencies..."
 				cleanenv injail "${PKG_BIN}" query '%Fp' "${pkgname}" | \
 				    cleanenv injail xargs readelf -d 2>/dev/null | \
 				    grep NEEDED | sort -u
@@ -5749,7 +5761,7 @@ build_port() {
 			job_build_status "stage-qa" "${originspec}" "${pkgname}"
 			if ! cleanenv injail /usr/bin/env DEVELOPER=1 \
 			    ${PORT_FLAGS:=-S "${PORT_FLAGS}"} \
-			    /usr/bin/make -C ${portdir} ${MAKE_ARGS} \
+			    /usr/bin/make -C ${portdir} ${flavor:+FLAVOR=${flavor}} ${MAKE_ARGS} \
 			    stage-qa; then
 				msg "Error: stage-qa failures detected"
 				if [ "${PORTTESTING_FATAL}" != "no" ]; then
@@ -5763,7 +5775,7 @@ build_port() {
 			if ! cleanenv injail /usr/bin/env \
 			    ${PORT_FLAGS:+-S "${PORT_FLAGS}"} \
 			    DEVELOPER=1 \
-			    /usr/bin/make -C ${portdir} ${MAKE_ARGS} \
+			    /usr/bin/make -C ${portdir} ${flavor:+FLAVOR=${flavor}} ${MAKE_ARGS} \
 			    check-plist; then
 				msg "Error: check-plist failures detected"
 				if [ "${PORTTESTING_FATAL}" != "no" ]; then
@@ -5895,13 +5907,40 @@ build_port() {
 		esac
 	done
 
-	if [ -d "${PACKAGES}/.npkg/${pkgname}" ]; then
+	pkg_stage="${PACKAGES}/.npkg/${pkgname}"
+	if [ -d "${pkg_stage}" ]; then
 		# everything was fine we can copy the package to the package
 		# directory
-		find "${PACKAGES:?}/.npkg/${pkgname}" \
-		    -mindepth 1 \( -type f -or -type l \) |
+		# Only the pkg bootstrap needs package-manager compatibility links.
+		pkg_stage_real=
+		case "${port}" in
+		ports-mgmt/pkg|ports-mgmt/pkg-devel)
+			pkg_stage_real="$(realpath -q "${pkg_stage}")" ||
+			    err 1 "build_port: realpath ${pkg_stage}"
+			;;
+		esac
+		{
+			case "${pkg_stage_real}" in
+			"") ;;
+			*)
+				# Process links first so their targets are still in staging.
+				find "${pkg_stage}" -mindepth 1 -type l
+				;;
+			esac
+			find "${pkg_stage}" -mindepth 1 -type f
+		} |
 		    while mapfile_read_loop_redir pkg_path; do
-			pkg_file="${pkg_path#"${PACKAGES}/.npkg/${pkgname:?}"}"
+			if [ -L "${pkg_path}" ]; then
+				pkg_target="$(realpath -q "${pkg_path}" || :)"
+				case "${pkg_target}" in
+				"${pkg_stage_real:?}/"*) ;;
+				*)
+					msg_warn "Ignoring package symlink outside staging: ${pkg_path}"
+					continue
+					;;
+				esac
+			fi
+			pkg_file="${pkg_path#"${pkg_stage}"}"
 			pkg_base="${pkg_file%/*}"
 			mkdir -p "${PACKAGES:?}/${pkg_base:?}"
 			# rename as this is expected to be on the same
@@ -6704,6 +6743,16 @@ _build_pkg_fp() {
 	fi
 }
 
+pkgname_is_valid() {
+	[ $# -eq 1 ] || eargs pkgname_is_valid pkgname
+	local pkgname="$1"
+
+	case "${pkgname}" in
+	""|"."|".."|*/*) return 1 ;;
+	esac
+	return 0
+}
+
 build_pkg() {
 	[ "$#" -eq 1 ] || eargs build_pkg pkgname
 	local pkgname="$1"
@@ -6720,6 +6769,9 @@ build_pkg() {
 	local elapsed now originspec status
 	local PORTTESTING build_reason
 	local -
+
+	pkgname_is_valid "${pkgname}" ||
+	    err 1 "build_pkg: Invalid PKGNAME '${pkgname}'"
 
 	_my_path mnt
 	_my_name name
@@ -7185,6 +7237,12 @@ deps_fetch_vars() {
 		err 1 "deps_fetch_vars: failed to get PKGNAME for ${COLOR_PORT}${originspec}${COLOR_RESET}"
 		;;
 	esac
+	if ! pkgname_is_valid "${_pkgname}"; then
+		msg_error "${COLOR_PORT}${origin}${COLOR_RESET} has invalid" \
+		    "PKGNAME '${_pkgname}'. Package names may not be empty," \
+		    "'.', '..', or contain '/'."
+		return 1
+	fi
 
 	# Validate PKGCATEGORY is proper to avoid:
 	# - Pkg not registering the dependency
@@ -9276,7 +9334,7 @@ gather_port_vars_process_depqueue() {
 }
 
 # We may gather metadata for more ports than we actually want to build.
-# In here will will compute the list of packages that we are actually
+# In here we will compute the list of packages that we are actually
 # interested in.
 compute_needed() {
 	[ "$#" -eq 0 ] || eargs compute_needed

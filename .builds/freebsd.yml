@@ -1,0 +1,18 @@
+image: freebsd/latest
+packages:
+  - pkgconf
+  - hs-ShellCheck
+sources:
+  - https://github.com/freebsd/poudriere
+tasks:
+  - configure: |
+      cd poudriere
+      ./configure
+  - build: |
+      cd poudriere
+      make
+  - test: |
+      cd poudriere
+      make check
+artifacts:
+  - poudriere/test/test-suite.log
